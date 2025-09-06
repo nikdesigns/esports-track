@@ -1,103 +1,151 @@
-import Image from "next/image";
+'use client';
+export default function Page() {
+  return <EsportsDashboard />;
+}
 
-export default function Home() {
+import { useState } from 'react';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Card, CardContent } from '@/components/ui/card';
+import { Flame, Trophy, Clock } from 'lucide-react';
+
+// Mock Data
+const matches = [
+  {
+    id: 1,
+    game: 'dota2',
+    teams: ['Team Spirit', 'PSG.LGD'],
+    score: [18, 12],
+    status: 'live',
+    startTime: '29:45',
+  },
+  {
+    id: 2,
+    game: 'csgo',
+    teams: ['Navi', 'G2'],
+    score: [12, 16],
+    status: 'finished',
+    startTime: '--',
+  },
+  {
+    id: 3,
+    game: 'valorant',
+    teams: ['LOUD', 'Fnatic'],
+    score: [8, 6],
+    status: 'upcoming',
+    startTime: '18:00 UTC',
+  },
+];
+
+const gameColors: Record<string, string> = {
+  dota2: 'bg-red-600',
+  csgo: 'bg-blue-600',
+  valorant: 'bg-pink-600',
+  lol: 'bg-yellow-500',
+  overwatch: 'bg-orange-500',
+};
+
+function EsportsDashboard() {
+  const [selectedGame, setSelectedGame] = useState('all');
+
+  const filteredMatches =
+    selectedGame === 'all'
+      ? matches
+      : matches.filter((m) => m.game === selectedGame);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="p-6 space-y-6">
+      {/* Tabs for Game Filter */}
+      <Tabs defaultValue="all" onValueChange={(v) => setSelectedGame(v)}>
+        <TabsList className="grid grid-cols-6 max-w-xl bg-[#1a1a1a] border border-gray-800 rounded-xl">
+          <TabsTrigger
+            value="all"
+            className="text-gray-300 data-[state=active]:text-white data-[state=active]:bg-gray-900 rounded-md"
+          >
+            All
+          </TabsTrigger>
+          <TabsTrigger
+            value="dota2"
+            className="text-gray-300 data-[state=active]:text-white data-[state=active]:bg-gray-900 rounded-md"
+          >
+            Dota 2
+          </TabsTrigger>
+          <TabsTrigger
+            value="csgo"
+            className="text-gray-300 data-[state=active]:text-white data-[state=active]:bg-gray-900 rounded-md"
+          >
+            CS:GO
+          </TabsTrigger>
+          <TabsTrigger
+            value="valorant"
+            className="text-gray-300 data-[state=active]:text-white data-[state=active]:bg-gray-900 rounded-md"
+          >
+            Valorant
+          </TabsTrigger>
+          <TabsTrigger
+            value="lol"
+            className="text-gray-300 data-[state=active]:text-white data-[state=active]:bg-gray-900 rounded-md"
+          >
+            LoL
+          </TabsTrigger>
+          <TabsTrigger
+            value="overwatch"
+            className="text-gray-300 data-[state=active]:text-white data-[state=active]:bg-gray-900 rounded-md"
+          >
+            Overwatch
+          </TabsTrigger>
+        </TabsList>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <TabsContent value={selectedGame}>
+          <div className="grid md:grid-cols-3 gap-4 mt-4">
+            {filteredMatches.map((match) => (
+              <Card
+                key={match.id}
+                className="rounded-2xl shadow-lg bg-[#1a1a1a] border border-gray-800"
+              >
+                <CardContent className="p-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <span
+                      className={`text-xs text-white px-2 py-1 rounded ${
+                        gameColors[match.game]
+                      }`}
+                    >
+                      {match.game.toUpperCase()}
+                    </span>
+                    {match.status === 'live' && (
+                      <span className="flex items-center text-red-500 text-xs">
+                        <Flame className="h-4 w-4 mr-1" /> LIVE
+                      </span>
+                    )}
+                    {match.status === 'upcoming' && (
+                      <span className="flex items-center text-gray-400 text-xs">
+                        <Clock className="h-4 w-4 mr-1" /> {match.startTime}
+                      </span>
+                    )}
+                    {match.status === 'finished' && (
+                      <span className="flex items-center text-green-500 text-xs">
+                        <Trophy className="h-4 w-4 mr-1" /> Finished
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Teams & Scores */}
+                  <div className="flex justify-between items-center">
+                    <div className="text-lg font-semibold">
+                      {match.teams[0]}
+                    </div>
+                    <div className="text-2xl font-bold">
+                      {match.score[0]} - {match.score[1]}
+                    </div>
+                    <div className="text-lg font-semibold">
+                      {match.teams[1]}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
