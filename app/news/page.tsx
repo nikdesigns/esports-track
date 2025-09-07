@@ -1,83 +1,84 @@
+// app/news/page.tsx
 'use client';
 
 import { useState } from 'react';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Globe, Calendar } from 'lucide-react';
 
-type Game = 'all' | 'dota2' | 'csgo' | 'valorant' | 'lol' | 'overwatch';
-
-interface NewsItem {
-  id: number;
+type NewsArticle = {
   title: string;
-  game: Game;
   date: string;
-}
+  source: string;
+  excerpt: string;
+  fullArticleUrl: string;
+};
 
-const mockNews: NewsItem[] = [
+const mockNews: NewsArticle[] = [
   {
-    id: 1,
-    title: 'Dota 2 Championship Recap',
-    game: 'dota2',
-    date: '2025-09-06',
+    title: 'Team Spirit wins The International 2025',
+    date: '2025-10-29',
+    source: 'Esports.com',
+    excerpt:
+      'In a stunning grand final, Team Spirit claimed victory over PSG.LGD to lift the Aegis of Champions...',
+    fullArticleUrl: '#',
   },
-  { id: 2, title: 'CS:GO Major Highlights', game: 'csgo', date: '2025-09-05' },
   {
-    id: 3,
-    title: 'Valorant Patch Notes',
-    game: 'valorant',
-    date: '2025-09-04',
+    title: 'NaVi crowned CS:GO Major champions',
+    date: '2025-07-20',
+    source: 'HLTV',
+    excerpt:
+      'NaVi have once again secured their dominance in CS:GO after defeating G2 in a thrilling final...',
+    fullArticleUrl: '#',
   },
-  { id: 4, title: 'LoL Worlds Preview', game: 'lol', date: '2025-09-03' },
   {
-    id: 5,
-    title: 'Overwatch League Update',
-    game: 'overwatch',
-    date: '2025-09-02',
+    title: 'Fnatic claims Valorant Champions 2025',
+    date: '2025-08-15',
+    source: 'VLR.gg',
+    excerpt:
+      'Fnatic showcased an incredible performance to defeat LOUD in the Valorant Champions grand finals...',
+    fullArticleUrl: '#',
   },
 ];
 
 export default function NewsPage() {
-  const [selectedGame, setSelectedGame] = useState<Game>('all');
-
-  const filteredNews =
-    selectedGame === 'all'
-      ? mockNews
-      : mockNews.filter((news) => news.game === selectedGame);
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   return (
-    <div className="min-h-screen bg-[#121212] text-gray-300 p-6">
-      {/* Tabs */}
-      <Tabs
-        defaultValue="all"
-        onValueChange={(value: string) => setSelectedGame(value as Game)}
-      >
-        <TabsList className="grid grid-cols-6 max-w-xl bg-[#1a1a1a] border border-gray-700 rounded-xl mb-6">
-          {['all', 'dota2', 'csgo', 'valorant', 'lol', 'overwatch'].map(
-            (game) => (
-              <TabsTrigger
-                key={game}
-                value={game as Game}
-                className="text-gray-400 hover:text-white data-[state=active]:bg-gray-800 data-[state=active]:text-white rounded-lg"
-              >
-                {game === 'all'
-                  ? 'All'
-                  : game.charAt(0).toUpperCase() + game.slice(1)}
-              </TabsTrigger>
-            )
-          )}
-        </TabsList>
-      </Tabs>
+    <div className="p-6 space-y-6 text-gray-200">
+      <h1 className="text-3xl font-bold text-white">Esports News</h1>
 
-      {/* News List */}
-      <div className="space-y-4">
-        {filteredNews.map((news) => (
-          <div
-            key={news.id}
-            className="p-4 border border-gray-700 rounded-xl bg-[#1a1a1a] hover:bg-gray-900 transition"
-          >
-            <h2 className="text-lg font-semibold text-white">{news.title}</h2>
-            <p className="text-sm text-gray-400">
-              {news.game.toUpperCase()} &bull; {news.date}
-            </p>
+      <div className="bg-[#121212] border border-gray-800 rounded-lg divide-y divide-gray-800">
+        {mockNews.map((article, idx) => (
+          <div key={article.title}>
+            {/* Row */}
+            <div
+              onClick={() => setExpanded(expanded === idx ? null : idx)}
+              className="grid grid-cols-3 px-4 py-3 hover:bg-[#1a1a1a] cursor-pointer"
+            >
+              <span className="font-semibold">{article.title}</span>
+              <span>{article.source}</span>
+              <span className="text-gray-400">{article.date}</span>
+            </div>
+
+            {/* Expanded */}
+            {expanded === idx && (
+              <div className="px-6 py-3 bg-[#1a1a1a] border-t border-gray-800 text-sm text-gray-300">
+                <p className="flex items-center space-x-2">
+                  <Globe className="h-4 w-4 text-blue-400" />
+                  <span>{article.source}</span>
+                </p>
+                <p className="flex items-center space-x-2">
+                  <Calendar className="h-4 w-4 text-gray-400" />
+                  <span>{article.date}</span>
+                </p>
+                <p className="mt-2">{article.excerpt}</p>
+                <a
+                  href={article.fullArticleUrl}
+                  className="text-blue-400 hover:underline mt-2 block"
+                >
+                  Read full article →
+                </a>
+              </div>
+            )}
           </div>
         ))}
       </div>

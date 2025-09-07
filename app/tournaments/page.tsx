@@ -1,139 +1,101 @@
+// app/tournaments/page.tsx
 'use client';
 
 import { useState } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Trophy, Calendar, Users } from 'lucide-react';
 
-// Mock tournament data
-interface Tournament {
-  id: number;
+type Tournament = {
   name: string;
   game: string;
-  status: 'upcoming' | 'live' | 'finished';
-  date: string;
-  teams: string[];
-}
+  startDate: string;
+  endDate: string;
+  prizePool: string;
+  format: string;
+  upcomingMatches: string[];
+};
 
 const mockTournaments: Tournament[] = [
   {
-    id: 1,
-    name: 'The International 12',
-    game: 'dota2',
-    status: 'live',
-    date: 'Ongoing',
-    teams: ['Team Spirit', 'PSG.LGD', 'Evil Geniuses'],
+    name: 'The International 2025',
+    game: 'Dota 2',
+    startDate: '2025-10-12',
+    endDate: '2025-10-29',
+    prizePool: '$40,000,000',
+    format: 'Double Elimination',
+    upcomingMatches: ['Team Spirit vs PSG.LGD', 'Evil Geniuses vs Liquid'],
   },
   {
-    id: 2,
-    name: 'ESL One Cologne',
-    game: 'csgo',
-    status: 'upcoming',
-    date: '2025-10-12',
-    teams: ['Navi', 'G2', 'Faze Clan'],
+    name: 'PGL Major',
+    game: 'CS:GO',
+    startDate: '2025-07-05',
+    endDate: '2025-07-20',
+    prizePool: '$2,000,000',
+    format: 'Swiss Stage + Playoffs',
+    upcomingMatches: ['NaVi vs G2', 'Faze vs Astralis'],
   },
   {
-    id: 3,
-    name: 'VALORANT Champions',
-    game: 'valorant',
-    status: 'finished',
-    date: '2025-07-15',
-    teams: ['LOUD', 'Fnatic', 'Sentinels'],
+    name: 'Valorant Champions',
+    game: 'Valorant',
+    startDate: '2025-08-01',
+    endDate: '2025-08-15',
+    prizePool: '$1,000,000',
+    format: 'Group Stage + Knockout',
+    upcomingMatches: ['Fnatic vs Sentinels', 'LOUD vs DRX'],
   },
 ];
 
 export default function TournamentsPage() {
-  const [selectedGame, setSelectedGame] = useState<
-    'all' | 'dota2' | 'csgo' | 'valorant'
-  >('all');
-
-  const filteredTournaments =
-    selectedGame === 'all'
-      ? mockTournaments
-      : mockTournaments.filter((t) => t.game === selectedGame);
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   return (
     <div className="p-6 space-y-6 text-gray-200">
-      <header>
-        <h1 className="text-3xl font-bold text-white">Tournaments</h1>
-      </header>
+      <h1 className="text-3xl font-bold text-white">Tournaments</h1>
 
-      {/* Tabs */}
-      <Tabs
-        defaultValue="all"
-        onValueChange={(v) =>
-          setSelectedGame(v as 'all' | 'dota2' | 'csgo' | 'valorant')
-        }
-      >
-        <TabsList className="grid grid-cols-4 max-w-lg bg-[#121212] border border-gray-700 rounded-xl">
-          <TabsTrigger
-            value="all"
-            className="text-gray-400 hover:text-white data-[state=active]:bg-gray-800 data-[state=active]:text-white rounded-lg"
-          >
-            All
-          </TabsTrigger>
-          <TabsTrigger
-            value="dota2"
-            className="text-gray-400 hover:text-white data-[state=active]:bg-gray-800 data-[state=active]:text-white rounded-lg"
-          >
-            Dota 2
-          </TabsTrigger>
-          <TabsTrigger
-            value="csgo"
-            className="text-gray-400 hover:text-white data-[state=active]:bg-gray-800 data-[state=active]:text-white rounded-lg"
-          >
-            CS:GO
-          </TabsTrigger>
-          <TabsTrigger
-            value="valorant"
-            className="text-gray-400 hover:text-white data-[state=active]:bg-gray-800 data-[state=active]:text-white rounded-lg"
-          >
-            Valorant
-          </TabsTrigger>
-        </TabsList>
+      <div className="bg-[#121212] border border-gray-800 rounded-lg divide-y divide-gray-800">
+        {mockTournaments.map((tournament, idx) => (
+          <div key={tournament.name}>
+            {/* Row */}
+            <div
+              onClick={() => setExpanded(expanded === idx ? null : idx)}
+              className="grid grid-cols-4 px-4 py-3 hover:bg-[#1a1a1a] cursor-pointer"
+            >
+              <span className="font-semibold">{tournament.name}</span>
+              <span>{tournament.game}</span>
+              <span>{tournament.startDate}</span>
+              <span>{tournament.endDate}</span>
+            </div>
 
-        <TabsContent value={selectedGame}>
-          <div className="space-y-4 mt-4">
-            {filteredTournaments.map((tournament) => (
-              <Card
-                key={tournament.id}
-                className="bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-lg"
-              >
-                <CardContent className="p-4">
-                  <h2 className="text-xl font-bold text-white">
-                    {tournament.name}
-                  </h2>
-                  <p className="text-gray-400">
-                    Game: {tournament.game.toUpperCase()}
-                  </p>
-                  <p className="text-gray-400">Date: {tournament.date}</p>
-                  <p className="text-gray-400">
-                    Status:{' '}
-                    <span
-                      className={
-                        tournament.status === 'live'
-                          ? 'text-red-500'
-                          : tournament.status === 'finished'
-                          ? 'text-green-500'
-                          : 'text-gray-300'
-                      }
-                    >
-                      {tournament.status.toUpperCase()}
+            {/* Expanded */}
+            {expanded === idx && (
+              <div className="px-6 py-3 bg-[#1a1a1a] border-t border-gray-800 text-sm text-gray-300">
+                <p className="flex items-center space-x-2">
+                  <Trophy className="h-4 w-4 text-yellow-500" />
+                  <span className="font-semibold text-white">Prize Pool:</span>
+                  <span>{tournament.prizePool}</span>
+                </p>
+                <p className="flex items-center space-x-2">
+                  <Calendar className="h-4 w-4 text-blue-400" />
+                  <span className="font-semibold text-white">Format:</span>
+                  <span>{tournament.format}</span>
+                </p>
+                <div className="mt-2">
+                  <p className="flex items-center space-x-2">
+                    <Users className="h-4 w-4 text-green-400" />
+                    <span className="font-semibold text-white">
+                      Upcoming Matches:
                     </span>
                   </p>
-                  <p className="text-gray-300 mt-2">
-                    Teams: {tournament.teams.join(', ')}
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
-            {filteredTournaments.length === 0 && (
-              <p className="text-gray-400">
-                No tournaments found for this game.
-              </p>
+                  <ul className="list-disc list-inside ml-6">
+                    {tournament.upcomingMatches.map((match) => (
+                      <li key={match}>{match}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
             )}
           </div>
-        </TabsContent>
-      </Tabs>
+        ))}
+      </div>
     </div>
   );
 }

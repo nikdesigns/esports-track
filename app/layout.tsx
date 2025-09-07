@@ -1,11 +1,12 @@
 // app/layout.tsx
 import './globals.css';
-import { Button } from '@/components/ui/button';
+import TopNav from '@/components/TopNav';
+import GameTabs from '@/components/GameTabs';
 import Link from 'next/link';
 
 export const metadata = {
   title: 'Esports Live',
-  description: 'Live scores, rankings, and tournaments for all esports',
+  description: 'Flashscore-style live esports tracker',
 };
 
 export default function RootLayout({
@@ -16,46 +17,51 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-[#0f0f0f] text-gray-200">
-        {/* Global Navbar */}
-        <header className="flex justify-between items-center px-6 py-4 border-b border-gray-800 bg-[#121212] shadow-md">
-          <h1 className="text-2xl font-bold text-white">Esports Live</h1>
-          <nav className="flex space-x-2 bg-[#1a1a1a] p-2 rounded-xl border border-gray-800">
-            <Button
-              variant="ghost"
-              asChild
-              className="text-gray-300 hover:text-white hover:bg-gray-800 rounded-md"
-            >
-              <Link href="/">Live Matches</Link>
-            </Button>
+        <div className="flex flex-col min-h-screen">
+          {/* Top Navigation */}
+          <TopNav />
 
-            <Button
-              variant="ghost"
-              asChild
-              className="text-gray-300 hover:text-white hover:bg-gray-800 rounded-md"
-            >
-              <Link href="/rankings">Rankings</Link>
-            </Button>
+          {/* Game Tabs (Flashscore style) */}
+          <GameTabs />
 
-            <Button
-              variant="ghost"
-              asChild
-              className="text-gray-300 hover:text-white hover:bg-gray-800 rounded-md"
-            >
-              <Link href="/tournaments">Tournaments</Link>
-            </Button>
+          <div className="flex flex-1">
+            {/* Sidebar */}
+            <aside className="w-60 bg-[#121212] border-r border-gray-800 min-h-screen sticky top-0">
+              <div className="p-4 text-xl font-bold text-white">
+                Esports Live
+              </div>
+              <nav className="flex flex-col space-y-1 p-2">
+                <Link
+                  href="/"
+                  className="px-3 py-2 rounded-md hover:bg-[#1f1f1f] text-gray-300 hover:text-white"
+                >
+                  Live Matches
+                </Link>
+                <Link
+                  href="/rankings"
+                  className="px-3 py-2 rounded-md hover:bg-[#1f1f1f] text-gray-300 hover:text-white"
+                >
+                  Rankings
+                </Link>
+                <Link
+                  href="/tournaments"
+                  className="px-3 py-2 rounded-md hover:bg-[#1f1f1f] text-gray-300 hover:text-white"
+                >
+                  Tournaments
+                </Link>
+                <Link
+                  href="/news"
+                  className="px-3 py-2 rounded-md hover:bg-[#1f1f1f] text-gray-300 hover:text-white"
+                >
+                  News
+                </Link>
+              </nav>
+            </aside>
 
-            <Button
-              variant="ghost"
-              asChild
-              className="text-gray-300 hover:text-white hover:bg-gray-800 rounded-md"
-            >
-              <Link href="/news">News</Link>
-            </Button>
-          </nav>
-        </header>
-
-        {/* Page content */}
-        <main className="p-6 min-h-screen bg-[#0f0f0f]">{children}</main>
+            {/* Main Content */}
+            <main className="flex-1 p-6">{children}</main>
+          </div>
+        </div>
       </body>
     </html>
   );
