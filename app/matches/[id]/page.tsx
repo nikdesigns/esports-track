@@ -24,6 +24,9 @@ const CANDIDATE_SUFFIXES = [
   '_full.png',
 ];
 
+/* Flag CDN base (small icons) */
+const FLAG_CDN = 'https://flagcdn.com'; // will use e.g. https://flagcdn.com/16x12/{cc}.png
+
 /* --------------------
    Utilities
    -------------------- */
@@ -147,25 +150,17 @@ async function resolveHeroUrlServer(hid: number, heroApiEntry?: AnyObj | null) {
   // check cache
   if (heroUrlCache.has(hid)) return heroUrlCache.get(hid) ?? null;
 
-  const tried: string[] = [];
-
   // try explicit img/icon fields first (some APIs may include these)
   const explicitImg = sanitizeUrl(heroApiEntry?.img ?? null);
   const explicitIcon = sanitizeUrl(heroApiEntry?.icon ?? null);
 
-  if (explicitImg) {
-    tried.push(explicitImg);
-    if (await urlExistsHEAD(explicitImg)) {
-      heroUrlCache.set(hid, explicitImg);
-      return explicitImg;
-    }
+  if (explicitImg && (await urlExistsHEAD(explicitImg))) {
+    heroUrlCache.set(hid, explicitImg);
+    return explicitImg;
   }
-  if (explicitIcon) {
-    tried.push(explicitIcon);
-    if (await urlExistsHEAD(explicitIcon)) {
-      heroUrlCache.set(hid, explicitIcon);
-      return explicitIcon;
-    }
+  if (explicitIcon && (await urlExistsHEAD(explicitIcon))) {
+    heroUrlCache.set(hid, explicitIcon);
+    return explicitIcon;
   }
 
   // build base from name (e.g. npc_dota_hero_nevermore -> nevermore)
@@ -180,7 +175,6 @@ async function resolveHeroUrlServer(hid: number, heroApiEntry?: AnyObj | null) {
   // try candidate suffixes in order
   for (const suf of CANDIDATE_SUFFIXES) {
     const cand = `${HERO_IMG_BASE}/${base}${suf}`;
-    tried.push(cand);
     if (await urlExistsHEAD(cand)) {
       heroUrlCache.set(hid, cand);
       return cand;
@@ -189,7 +183,6 @@ async function resolveHeroUrlServer(hid: number, heroApiEntry?: AnyObj | null) {
 
   // try plain .png as last resort
   const plain = `${HERO_IMG_BASE}/${base}.png`;
-  tried.push(plain);
   if (await urlExistsHEAD(plain)) {
     heroUrlCache.set(hid, plain);
     return plain;
@@ -197,6 +190,81 @@ async function resolveHeroUrlServer(hid: number, heroApiEntry?: AnyObj | null) {
 
   heroUrlCache.set(hid, null);
   return null;
+}
+
+/* --------------------
+   Team helpers
+   -------------------- */
+/**
+ * Extract team info for a side ('radiant' | 'dire') in a robust way.
+ * Returns { id?, name?, logoUrl?, countryCode? } — all fields optional.
+ */
+function getTeamInfo(match: AnyObj, side: 'radiant' | 'dire') {
+  // try radiant_team / dire_team first
+  const teamField = side === 'radiant' ? match.radiant_team : match.dire_team;
+  if (teamField && typeof teamField === 'object') {
+    const id = teamField.id ?? teamField.team_id ?? teamField.teamId ?? null;
+    const name = teamField.name ?? teamField.tag ?? teamField.acronym ?? null;
+    const logoUrl = sanitizeUrl(
+      teamField.logo_url ??
+        teamField.logo ??
+        teamField.image_url ??
+        teamField.image ??
+        null
+    );
+    const country =
+      teamField.location ?? teamField.country ?? teamField.region ?? null
+        ? String(
+            teamField.location ?? teamField.country ?? teamField.region
+          ).toLowerCase()
+        : null;
+    return { id, name, logoUrl, country };
+  }
+
+  // fallback to opponents array (commonly used)
+  if (Array.isArray(match.opponents)) {
+    const idx = side === 'radiant' ? 0 : 1;
+    const opp =
+      match.opponents[idx] && match.opponents[idx].opponent
+        ? match.opponents[idx].opponent
+        : null;
+    if (opp) {
+      const id = opp.id ?? null;
+      const name = opp.name ?? opp.acronym ?? opp.tag ?? null;
+      const logoUrl = sanitizeUrl(
+        opp.image_url ?? opp.logo_url ?? opp.logo ?? opp.image ?? null
+      );
+      const country =
+        opp.location ?? opp.country ?? opp.region ?? null
+          ? String(opp.location ?? opp.country ?? opp.region).toLowerCase()
+          : null;
+      return { id, name, logoUrl, country };
+    }
+  }
+
+  // try winner object as last resort (not ideal)
+  if (match.winner && typeof match.winner === 'object') {
+    const id = match.winner.id ?? null;
+    const name = match.winner.name ?? null;
+    const logoUrl = sanitizeUrl(
+      match.winner.image_url ?? match.winner.image ?? null
+    );
+    const country =
+      match.winner.location ?? match.winner.country ?? null
+        ? String(match.winner.location ?? match.winner.country).toLowerCase()
+        : null;
+    return { id, name, logoUrl, country };
+  }
+
+  return { id: null, name: null, logoUrl: null, country: null };
+}
+
+/* small helper to build flag url from country code (ISO2) */
+function flagUrlFromCountry(country?: string | null, size = '16x12') {
+  if (!country || typeof country !== 'string') return null;
+  const cc = country.slice(0, 2).toLowerCase();
+  // FlagCDN path example: https://flagcdn.com/16x12/no.png
+  return `https://flagcdn.com/${size}/${cc}.png`;
 }
 
 /* --------------------
@@ -281,8 +349,7 @@ export default async function MatchPage({
     const apiEntry = heroApiMap.get(hid) ?? null;
     const url = await resolveHeroUrlServer(hid, apiEntry);
     const name = apiEntry?.localized_name ?? apiEntry?.name ?? `Hero ${hid}`;
-    // return object
-    return { hid, name, url, tried: undefined }; // tried not returned here (we log inside helper if needed)
+    return { hid, name, url };
   });
 
   const resolved = await Promise.all(resolvePromises);
@@ -311,9 +378,16 @@ export default async function MatchPage({
   }
 
   // prepare view fields
+  const radiantTeamInfo = getTeamInfo(match, 'radiant');
+  const direTeamInfo = getTeamInfo(match, 'dire');
+
   const radiantName =
-    match.radiant_name ?? match.radiant_team?.name ?? 'Radiant';
-  const direName = match.dire_name ?? match.dire_team?.name ?? 'Dire';
+    match.radiant_name ??
+    radiantTeamInfo.name ??
+    match.radiant_team?.tag ??
+    'Radiant';
+  const direName =
+    match.dire_name ?? direTeamInfo.name ?? match.dire_team?.tag ?? 'Dire';
   const radiantScore =
     typeof match.radiant_score === 'number' ? match.radiant_score : null;
   const direScore =
@@ -327,6 +401,10 @@ export default async function MatchPage({
         ? 'radiant'
         : 'dire'
       : null;
+
+  // Flags
+  const radiantFlag = flagUrlFromCountry(radiantTeamInfo.country);
+  const direFlag = flagUrlFromCountry(direTeamInfo.country);
 
   // small helper component that uses your client-side ImageWithFallback
   const RenderImage = (props: {
@@ -363,14 +441,148 @@ export default async function MatchPage({
           <h1 className="text-2xl font-bold text-white">
             {match.name ?? `${radiantName} vs ${direName}`}
           </h1>
-          <div className="mt-1 text-sm text-gray-400">
+          <div className="mt-2 flex items-center gap-3 text-sm text-gray-400">
+            {/* tournament */}
             {tournament ? <span className="mr-2">• {tournament}</span> : null}
+            {/* league/time */}
             {startTimeMs ? (
               <span className="text-xs text-gray-400">
                 {' '}
                 • {formatTime12Hour(startTimeMs)}
               </span>
             ) : null}
+          </div>
+
+          {/* Team badges row (small logos beside names) */}
+          <div className="mt-3 flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              {/* Link to team page if id exists */}
+              {radiantTeamInfo.id ? (
+                <Link
+                  href={`/teams/${radiantTeamInfo.id}`}
+                  className="flex items-center gap-2"
+                >
+                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
+                    {radiantTeamInfo.logoUrl ? (
+                      <ImageWithFallback
+                        src={radiantTeamInfo.logoUrl}
+                        alt={radiantName}
+                        width={32}
+                        height={32}
+                      />
+                    ) : (
+                      <div className="w-8 h-8 bg-gray-700" />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="text-sm text-gray-200 font-medium">
+                      {radiantName}
+                    </div>
+                    {radiantFlag ? (
+                      <ImageWithFallback
+                        src={radiantFlag}
+                        alt="flag"
+                        width={16}
+                        height={12}
+                      />
+                    ) : null}
+                  </div>
+                </Link>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
+                    {radiantTeamInfo.logoUrl ? (
+                      <ImageWithFallback
+                        src={radiantTeamInfo.logoUrl}
+                        alt={radiantName}
+                        width={32}
+                        height={32}
+                      />
+                    ) : (
+                      <div className="w-8 h-8 bg-gray-700" />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="text-sm text-gray-200 font-medium">
+                      {radiantName}
+                    </div>
+                    {radiantFlag ? (
+                      <ImageWithFallback
+                        src={radiantFlag}
+                        alt="flag"
+                        width={16}
+                        height={12}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="text-sm text-gray-400">vs</div>
+
+            <div className="flex items-center gap-2">
+              {direTeamInfo.id ? (
+                <Link
+                  href={`/teams/${direTeamInfo.id}`}
+                  className="flex items-center gap-2"
+                >
+                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
+                    {direTeamInfo.logoUrl ? (
+                      <ImageWithFallback
+                        src={direTeamInfo.logoUrl}
+                        alt={direName}
+                        width={32}
+                        height={32}
+                      />
+                    ) : (
+                      <div className="w-8 h-8 bg-gray-700" />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="text-sm text-gray-200 font-medium">
+                      {direName}
+                    </div>
+                    {direFlag ? (
+                      <ImageWithFallback
+                        src={direFlag}
+                        alt="flag"
+                        width={16}
+                        height={12}
+                      />
+                    ) : null}
+                  </div>
+                </Link>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
+                    {direTeamInfo.logoUrl ? (
+                      <ImageWithFallback
+                        src={direTeamInfo.logoUrl}
+                        alt={direName}
+                        width={32}
+                        height={32}
+                      />
+                    ) : (
+                      <div className="w-8 h-8 bg-gray-700" />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="text-sm text-gray-200 font-medium">
+                      {direName}
+                    </div>
+                    {direFlag ? (
+                      <ImageWithFallback
+                        src={direFlag}
+                        alt="flag"
+                        width={16}
+                        height={12}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -390,7 +602,7 @@ export default async function MatchPage({
         </div>
       </div>
 
-      {/* Players (sample / full) */}
+      {/* Players (full) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
         {/* Radiant */}
         <section
@@ -399,12 +611,27 @@ export default async function MatchPage({
           } rounded-xl p-4`}
         >
           <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="text-sm text-gray-400">Radiant</div>
-              <div className="text-lg font-semibold text-white">
-                {radiantName}
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
+                {radiantTeamInfo.logoUrl ? (
+                  <ImageWithFallback
+                    src={radiantTeamInfo.logoUrl}
+                    alt={radiantName}
+                    width={32}
+                    height={32}
+                  />
+                ) : (
+                  <div className="w-8 h-8 bg-gray-700" />
+                )}
+              </div>
+              <div>
+                <div className="text-sm text-gray-400">Radiant</div>
+                <div className="text-lg font-semibold text-white">
+                  {radiantName}
+                </div>
               </div>
             </div>
+
             <div className="text-right">
               <div className="text-xs text-gray-400">Score</div>
               <div
@@ -432,8 +659,6 @@ export default async function MatchPage({
                   (p.account_id
                     ? `Player ${p.account_id}`
                     : `Slot ${p.player_slot}`);
-                const itemKeys = [];
-                for (let k = 0; k <= 5; k++) itemKeys.push(p[`item_${k}`]);
                 return (
                   <div
                     key={p.account_id ?? idx}
@@ -442,11 +667,11 @@ export default async function MatchPage({
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
                         {heroUrl ? (
-                          <RenderImage
+                          <ImageWithFallback
                             src={heroUrl}
                             alt={heroName}
-                            w={48}
-                            h={48}
+                            width={48}
+                            height={48}
                           />
                         ) : (
                           <div className="text-xs text-white">
@@ -489,10 +714,27 @@ export default async function MatchPage({
           } rounded-xl p-4`}
         >
           <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="text-sm text-gray-400">Dire</div>
-              <div className="text-lg font-semibold text-white">{direName}</div>
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
+                {direTeamInfo.logoUrl ? (
+                  <ImageWithFallback
+                    src={direTeamInfo.logoUrl}
+                    alt={direName}
+                    width={32}
+                    height={32}
+                  />
+                ) : (
+                  <div className="w-8 h-8 bg-gray-700" />
+                )}
+              </div>
+              <div>
+                <div className="text-sm text-gray-400">Dire</div>
+                <div className="text-lg font-semibold text-white">
+                  {direName}
+                </div>
+              </div>
             </div>
+
             <div className="text-right">
               <div className="text-xs text-gray-400">Score</div>
               <div
@@ -528,11 +770,11 @@ export default async function MatchPage({
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
                         {heroUrl ? (
-                          <RenderImage
+                          <ImageWithFallback
                             src={heroUrl}
                             alt={heroName}
-                            w={48}
-                            h={48}
+                            width={48}
+                            height={48}
                           />
                         ) : (
                           <div className="text-xs text-white">

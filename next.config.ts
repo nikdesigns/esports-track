@@ -5,8 +5,10 @@ module.exports = {
     domains: [
       'api.opendota.com',
       'cdn.opendota.com',
+      'flagcdn.com',
       'cdn.pandascore.co',
       'cdn.steamusercontent.com',
+      'cdn.opendota.com',
     ],
   },
 };
