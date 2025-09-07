@@ -1,6 +1,5 @@
-/** next.config.js */
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+// next.config.js (recommended hosts)
+module.exports = {
   reactStrictMode: true,
   images: {
     domains: [
@@ -8,10 +7,6 @@ const nextConfig = {
       'cdn.opendota.com',
       'cdn.pandascore.co',
       'cdn.steamusercontent.com',
-      'images.igdb.com',
-      // add others you see in Network tab
     ],
   },
 };
-
-module.exports = nextConfig;

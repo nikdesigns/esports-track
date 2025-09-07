@@ -3,94 +3,32 @@ import React from 'react';
 import Link from 'next/link';
 import ImageWithFallback from '@/components/ImageWithFallback';
 
-type OpenDotaMatch = any;
+type AnyObj = Record<string, any>;
 
 /* --------------------
-   Config / endpoints
+   Endpoints & config
    -------------------- */
 const MATCH_URL = (id: string | number) =>
   `https://api.opendota.com/api/matches/${id}`;
-const HEROES_URL = 'https://api.opendota.com/api/constants/heroes';
+const HEROES_LIST_URL = 'https://api.opendota.com/api/heroes';
 const ITEMS_URL = 'https://api.opendota.com/api/constants/items';
 
-/* --------------------
-   Helpers
-   -------------------- */
+/* hero image base and candidate suffixes */
+const HERO_IMG_BASE =
+  'https://api.opendota.com/apps/dota2/images/dota_react/heroes';
+const CANDIDATE_SUFFIXES = [
+  '_lg.png',
+  '.png',
+  '_portrait.png',
+  '_vert.png',
+  '_full.png',
+];
 
-// convert seconds -> ms
+/* --------------------
+   Utilities
+   -------------------- */
 const toMs = (unixSeconds?: number | null) =>
   typeof unixSeconds === 'number' ? unixSeconds * 1000 : null;
-
-// sanitize OpenDota returned paths or full URLs to absolute https and remove stray '?' or '&'
-function sanitizeOpenDotaUrl(raw?: string | null) {
-  if (!raw || typeof raw !== 'string') return null;
-  let s = raw.trim();
-  // Strip trailing ? or &
-  while (s.endsWith('?') || s.endsWith('&')) s = s.slice(0, -1);
-  // If given a path (starts with /) prefix with api.opendota.com
-  if (s.startsWith('/')) s = `https://api.opendota.com${s}`;
-  // Normalize http -> https
-  if (s.startsWith('http://')) s = 'https://' + s.slice(7);
-  return s || null;
-}
-
-/**
- * hero constants -> lookup by numeric hero id
- * heroesJson is the raw object from /constants/heroes
- * returns { name, url } where url is sanitized absolute url (or null)
- */
-function getHeroImageById(
-  heroesJson: Record<string, any> | null,
-  heroId?: number | null
-) {
-  if (!heroId || !heroesJson)
-    return { name: `Hero ${heroId ?? ''}`, url: null };
-  for (const key of Object.keys(heroesJson)) {
-    const obj = (heroesJson as any)[key];
-    if (!obj) continue;
-    if (obj.id === heroId) {
-      // prefer img (larger), fallback to icon
-      const raw = obj.img ?? obj.icon ?? null;
-      const url = sanitizeOpenDotaUrl(raw);
-      const name = obj.localized_name ?? obj.name ?? key;
-      return { name, url };
-    }
-  }
-  return { name: `Hero ${heroId}`, url: null };
-}
-
-/**
- * Build item map from /constants/items. Keys are internal names (e.g. 'blink').
- */
-function buildItemMap(itemsJson: Record<string, any> | null) {
-  const map = new Map<string, { dname?: string; img?: string }>();
-  if (!itemsJson) return map;
-  for (const key of Object.keys(itemsJson)) {
-    const it = itemsJson[key];
-    if (!it) continue;
-    const img =
-      typeof it.img === 'string' ? sanitizeOpenDotaUrl(it.img) : undefined;
-    map.set(key, { dname: it.dname ?? it.name ?? key, img });
-  }
-  return map;
-}
-
-/**
- * Safe lookup for an item key (player.item_0 etc). Handles strings only.
- */
-function getItemFromKey(
-  key: string | number | null | undefined,
-  itemMap: Map<string, { dname?: string; img?: string }>
-) {
-  if (!key) return null;
-  if (typeof key !== 'string') return null;
-  const direct = itemMap.get(key);
-  if (direct) return direct;
-  const stripped = key.replace(/^item_/, '');
-  const val = itemMap.get(stripped);
-  if (val) return val;
-  return { dname: key, img: null };
-}
 
 function formatTime12Hour(msOrNull?: number | null) {
   if (!msOrNull) return 'TBD';
@@ -118,59 +56,174 @@ function formatDuration(sec?: number | null) {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
+function sanitizeUrl(raw?: string | null) {
+  if (!raw || typeof raw !== 'string') return null;
+  let s = raw.trim();
+  while (s.endsWith('?') || s.endsWith('&')) s = s.slice(0, -1);
+  if (s.startsWith('/')) s = `https://api.opendota.com${s}`;
+  if (s.startsWith('http://')) s = 'https://' + s.slice(7);
+  return s || null;
+}
+
 /* --------------------
-   Page component
+   Fetch with retries + timeout
+   -------------------- */
+async function fetchWithRetries(
+  url: string,
+  retries = 3,
+  timeoutMs = 12000,
+  backoffMs = 500
+) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      console.log(`[fetchWithRetries] attempt ${attempt}/${retries} ${url}`);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) {
+        let body = '';
+        try {
+          body = await res.text();
+          if (body.length > 300) body = body.slice(0, 300) + '...';
+        } catch {}
+        console.warn(
+          `[fetchWithRetries] ${url} returned ${res.status} ${res.statusText}`,
+          body ? `body: ${body}` : ''
+        );
+        if (res.status >= 500 || res.status === 429) {
+          // allow retry
+        } else {
+          return null;
+        }
+      } else {
+        return await res.json();
+      }
+    } catch (err: any) {
+      clearTimeout(timer);
+      if (err?.name === 'AbortError') {
+        console.warn(`[fetchWithRetries] timeout ${timeoutMs}ms for ${url}`);
+      } else {
+        console.warn(
+          `[fetchWithRetries] fetch error for ${url}:`,
+          err?.message ?? err
+        );
+      }
+    }
+    if (attempt < retries) {
+      const waitMs = backoffMs * Math.pow(2, attempt - 1);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  console.error(`[fetchWithRetries] all ${retries} attempts failed for ${url}`);
+  return null;
+}
+
+/* --------------------
+   HEAD-check helper & server cache for hero urls
+   -------------------- */
+const heroUrlCache = new Map<number, string | null>(); // heroId -> url or null
+
+async function urlExistsHEAD(url: string) {
+  try {
+    const res = await fetch(url, { method: 'HEAD' });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+function baseHeroNameFrom(heroName: string | undefined | null) {
+  if (!heroName || typeof heroName !== 'string') return null;
+  const maybe = heroName.replace(/^npc_dota_hero_/, '');
+  return maybe
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+}
+
+/* Resolve hero url server-side by trying explicit fields then candidate filenames */
+async function resolveHeroUrlServer(hid: number, heroApiEntry?: AnyObj | null) {
+  // check cache
+  if (heroUrlCache.has(hid)) return heroUrlCache.get(hid) ?? null;
+
+  const tried: string[] = [];
+
+  // try explicit img/icon fields first (some APIs may include these)
+  const explicitImg = sanitizeUrl(heroApiEntry?.img ?? null);
+  const explicitIcon = sanitizeUrl(heroApiEntry?.icon ?? null);
+
+  if (explicitImg) {
+    tried.push(explicitImg);
+    if (await urlExistsHEAD(explicitImg)) {
+      heroUrlCache.set(hid, explicitImg);
+      return explicitImg;
+    }
+  }
+  if (explicitIcon) {
+    tried.push(explicitIcon);
+    if (await urlExistsHEAD(explicitIcon)) {
+      heroUrlCache.set(hid, explicitIcon);
+      return explicitIcon;
+    }
+  }
+
+  // build base from name (e.g. npc_dota_hero_nevermore -> nevermore)
+  const base = baseHeroNameFrom(
+    heroApiEntry?.name ?? heroApiEntry?.localized_name ?? ''
+  );
+  if (!base) {
+    heroUrlCache.set(hid, null);
+    return null;
+  }
+
+  // try candidate suffixes in order
+  for (const suf of CANDIDATE_SUFFIXES) {
+    const cand = `${HERO_IMG_BASE}/${base}${suf}`;
+    tried.push(cand);
+    if (await urlExistsHEAD(cand)) {
+      heroUrlCache.set(hid, cand);
+      return cand;
+    }
+  }
+
+  // try plain .png as last resort
+  const plain = `${HERO_IMG_BASE}/${base}.png`;
+  tried.push(plain);
+  if (await urlExistsHEAD(plain)) {
+    heroUrlCache.set(hid, plain);
+    return plain;
+  }
+
+  heroUrlCache.set(hid, null);
+  return null;
+}
+
+/* --------------------
+   Page component (Server)
    -------------------- */
 export default async function MatchPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const { id } = params;
+  const { id } = await params;
 
-  // Defensive parallel fetch (match, heroes, items)
-  let matchJson: OpenDotaMatch | null = null;
-  let heroesJson: Record<string, any> | null = null;
-  let itemsJson: Record<string, any> | null = null;
-  try {
-    const [mRes, hRes, iRes] = await Promise.allSettled([
-      fetch(MATCH_URL(id), { next: { revalidate: 30 } }),
-      fetch(HEROES_URL, { next: { revalidate: 3600 } }),
-      fetch(ITEMS_URL, { next: { revalidate: 3600 } }),
-    ]);
+  // fetch match, heroes list, and items (concurrently)
+  const [matchJson, heroesListJson, itemsJson] = await Promise.all([
+    fetchWithRetries(MATCH_URL(id), 3, 15000, 500),
+    fetchWithRetries(HEROES_LIST_URL, 2, 10000, 400),
+    fetchWithRetries(ITEMS_URL, 2, 10000, 400),
+  ]);
 
-    if (mRes.status === 'fulfilled') {
-      const r = mRes.value as Response;
-      if (r.ok) matchJson = await r.json();
-      else {
-        const txt = await r.text().catch(() => '');
-        console.error('Match fetch failed', r.status, txt);
-      }
-    } else {
-      console.error('Match fetch rejected', mRes.reason);
-    }
-
-    if (hRes.status === 'fulfilled') {
-      const r = hRes.value as Response;
-      if (r.ok) heroesJson = await r.json();
-      else
-        console.warn(
-          'Heroes constants fetch non-OK',
-          (hRes.value as Response).status
-        );
-    } else console.warn('Heroes fetch rejected', hRes.reason);
-
-    if (iRes.status === 'fulfilled') {
-      const r = iRes.value as Response;
-      if (r.ok) itemsJson = await r.json();
-      else
-        console.warn(
-          'Items constants fetch non-OK',
-          (iRes.value as Response).status
-        );
-    } else console.warn('Items fetch rejected', iRes.reason);
-  } catch (err) {
-    console.error('Unexpected fetch error', err);
+  // debug: log heroes list sample to help debugging
+  if (Array.isArray(heroesListJson)) {
+    console.log(
+      'DEBUG heroesListJson sample (first 6):',
+      heroesListJson.slice(0, 6)
+    );
+  } else {
+    console.log('DEBUG heroesListJson: not available or not array');
   }
 
   if (!matchJson) {
@@ -179,8 +232,11 @@ export default async function MatchPage({
         <h1 className="text-2xl font-bold text-white mb-4">Match {id}</h1>
         <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 text-red-300">
           <p>
-            Unable to load match details from OpenDota. Check server logs for
-            details.
+            Unable to load match details from OpenDota after several attempts.
+          </p>
+          <p className="mt-2 text-xs text-gray-400">
+            Check server console for debug logs (heroes list, resolved hero
+            URLs, errors).
           </p>
         </div>
         <div className="mt-4">
@@ -194,10 +250,67 @@ export default async function MatchPage({
     );
   }
 
-  // Build maps
-  const itemMap = buildItemMap(itemsJson);
-  // Prepare players and other computed fields
-  const match = matchJson;
+  const match: AnyObj = matchJson as AnyObj;
+
+  // Build a map from heroId -> hero API entry (if available)
+  const heroApiMap = new Map<number, AnyObj | null>();
+  if (Array.isArray(heroesListJson)) {
+    for (const h of heroesListJson) {
+      if (!h || typeof h.id !== 'number') continue;
+      heroApiMap.set(h.id, h);
+    }
+  }
+
+  // players & picks_bans
+  const players: AnyObj[] = Array.isArray(match.players) ? match.players : [];
+  const picksBans: AnyObj[] = Array.isArray(match.picks_bans)
+    ? match.picks_bans
+    : [];
+
+  // collect unique hero ids used
+  const usedHeroIds = new Set<number>();
+  players.forEach((p) => {
+    if (typeof p.hero_id === 'number') usedHeroIds.add(p.hero_id);
+  });
+  picksBans.forEach((pb) => {
+    if (typeof pb.hero_id === 'number') usedHeroIds.add(pb.hero_id);
+  });
+
+  // Resolve hero urls server-side in parallel (caches applied)
+  const resolvePromises = Array.from(usedHeroIds).map(async (hid) => {
+    const apiEntry = heroApiMap.get(hid) ?? null;
+    const url = await resolveHeroUrlServer(hid, apiEntry);
+    const name = apiEntry?.localized_name ?? apiEntry?.name ?? `Hero ${hid}`;
+    // return object
+    return { hid, name, url, tried: undefined }; // tried not returned here (we log inside helper if needed)
+  });
+
+  const resolved = await Promise.all(resolvePromises);
+  const heroResolved = new Map<number, { name: string; url?: string | null }>();
+  for (const r of resolved) {
+    heroResolved.set(r.hid, { name: r.name, url: r.url ?? null });
+  }
+
+  // Debug: log resolved results (first 20)
+  console.log(
+    'DEBUG heroResolved after HEAD-check (sample):',
+    Array.from(heroResolved.entries()).slice(0, 20)
+  );
+
+  // items map for item icons
+  const itemMap = new Map<string, { dname?: string; img?: string }>();
+  if (itemsJson && typeof itemsJson === 'object') {
+    for (const k of Object.keys(itemsJson)) {
+      const it = (itemsJson as AnyObj)[k];
+      if (!it) continue;
+      itemMap.set(k, {
+        dname: it.dname ?? it.name ?? k,
+        img: sanitizeUrl(it.img ?? null),
+      });
+    }
+  }
+
+  // prepare view fields
   const radiantName =
     match.radiant_name ?? match.radiant_team?.name ?? 'Radiant';
   const direName = match.dire_name ?? match.dire_team?.name ?? 'Dire';
@@ -205,72 +318,17 @@ export default async function MatchPage({
     typeof match.radiant_score === 'number' ? match.radiant_score : null;
   const direScore =
     typeof match.dire_score === 'number' ? match.dire_score : null;
-  const duration = typeof match.duration === 'number' ? match.duration : null;
   const startTimeMs = toMs(match.start_time ?? null);
-  const league = match.league_name ?? match.league_id ?? null;
   const tournament =
-    match.tournament ?? match.tournament?.name ?? match.tournament_id ?? null;
+    match.tournament?.name ?? match.tournament ?? match.tournament_id ?? null;
   const winnerside =
-    match.radiant_win === true
-      ? 'radiant'
-      : match.radiant_win === false
-      ? 'dire'
+    typeof match.radiant_win === 'boolean'
+      ? match.radiant_win
+        ? 'radiant'
+        : 'dire'
       : null;
-  const players: any[] = Array.isArray(match.players) ? match.players : [];
-  const radiantPlayers = players.filter(
-    (p) => typeof p.player_slot === 'number' && p.player_slot < 128
-  );
-  const direPlayers = players.filter(
-    (p) => typeof p.player_slot === 'number' && p.player_slot >= 128
-  );
-  const picksBans: any[] = Array.isArray(match.picks_bans)
-    ? match.picks_bans
-    : [];
 
-  // Gather debug image URLs (server-side log)
-  const debugImageUrls: string[] = [];
-
-  function heroForId(id?: number | null) {
-    const { name, url } = getHeroImageById(heroesJson, id);
-    if (url) debugImageUrls.push(url);
-    return { name, url };
-  }
-
-  function mapItemKeyToData(key: string | null | undefined) {
-    const it = getItemFromKey(key, itemMap);
-    if (it?.img) debugImageUrls.push(it.img);
-    return it;
-  }
-
-  // add opponent team logos if present
-  (match.opponents ?? []).forEach((opp: any) => {
-    const url = sanitizeOpenDotaUrl(
-      opp?.opponent?.image_url ?? opp?.opponent?.logo_url ?? null
-    );
-    if (url) debugImageUrls.push(url);
-  });
-
-  // hero images from players + items
-  players.forEach((p) => {
-    const hero = getHeroImageById(heroesJson, p.hero_id);
-    if (hero.url) debugImageUrls.push(hero.url);
-    for (let k = 0; k <= 5; k++) {
-      const itemKey = p[`item_${k}`];
-      if (typeof itemKey === 'string') {
-        const it = getItemFromKey(itemKey, itemMap);
-        if (it?.img) debugImageUrls.push(it.img);
-      }
-    }
-  });
-
-  // log a sample (deduped) to server console for debugging
-  const uniqueUrls = Array.from(new Set(debugImageUrls)).slice(0, 50);
-  if (uniqueUrls.length) {
-    console.log('DEBUG: sample image URLs for match', id);
-    for (const u of uniqueUrls) console.log('  ', u);
-  }
-
-  // small UI helper: Render either ImageWithFallback (client) or simple placeholder
+  // small helper component that uses your client-side ImageWithFallback
   const RenderImage = (props: {
     src?: string | null;
     alt?: string;
@@ -296,17 +354,7 @@ export default async function MatchPage({
     );
   };
 
-  const statusText = () => {
-    if (winnerside) return 'Finished';
-    if (
-      match.start_time &&
-      toMs(match.start_time) &&
-      toMs(match.start_time)! <= Date.now()
-    )
-      return 'Live';
-    return 'Scheduled';
-  };
-
+  // UI render
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
@@ -316,15 +364,7 @@ export default async function MatchPage({
             {match.name ?? `${radiantName} vs ${direName}`}
           </h1>
           <div className="mt-1 text-sm text-gray-400">
-            {league ? <span className="mr-2">{league}</span> : null}
-            {tournament ? (
-              <span className="mr-2">
-                •{' '}
-                {typeof tournament === 'string'
-                  ? tournament
-                  : `Tournament ${tournament}`}
-              </span>
-            ) : null}
+            {tournament ? <span className="mr-2">• {tournament}</span> : null}
             {startTimeMs ? (
               <span className="text-xs text-gray-400">
                 {' '}
@@ -334,93 +374,23 @@ export default async function MatchPage({
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-center">
-            <div className="text-3xl font-extrabold text-white">
-              {radiantScore == null && direScore == null
-                ? '--'
-                : `${radiantScore ?? 0} - ${direScore ?? 0}`}
-            </div>
-            <div className="text-xs text-gray-400 mt-1">{statusText()}</div>
+        <div className="text-right">
+          <div className="text-3xl font-extrabold text-white">
+            {radiantScore == null && direScore == null
+              ? '--'
+              : `${radiantScore ?? 0} - ${direScore ?? 0}`}
           </div>
-
-          <div className="text-right">
-            <div className="text-sm text-gray-400">Duration</div>
-            <div className="text-base text-gray-100 font-medium">
-              {formatDuration(duration)}
-            </div>
+          <div className="text-xs text-gray-400 mt-1">
+            {winnerside
+              ? 'Finished'
+              : match.start_time && toMs(match.start_time)! <= Date.now()
+              ? 'Live'
+              : 'Scheduled'}
           </div>
         </div>
       </div>
 
-      {/* Picks & Bans + Match info */}
-      {picksBans.length > 0 && (
-        <div className="mb-4 grid grid-cols-2 gap-4">
-          <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-3">
-            <div className="text-sm text-gray-400 mb-2">Picks & Bans</div>
-            <div className="flex gap-2 flex-wrap">
-              {picksBans.map((pb: any, i: number) => {
-                const isPick = pb.is_pick;
-                const team = pb.team === 0 ? 'Radiant' : 'Dire';
-                const { name, url } = getHeroImageById(heroesJson, pb.hero_id);
-                return (
-                  <div
-                    key={i}
-                    className={`flex items-center gap-2 px-2 py-1 rounded ${
-                      isPick
-                        ? 'bg-gray-900 border border-gray-800'
-                        : 'bg-black/30 border border-gray-800'
-                    }`}
-                  >
-                    {url ? (
-                      <RenderImage src={url} alt={name} w={36} h={20} />
-                    ) : (
-                      <div className="w-8 h-5 flex items-center justify-center text-xs text-white bg-gray-800 rounded">
-                        {name.slice(0, 2)}
-                      </div>
-                    )}
-                    <div className="text-xs text-gray-200">{name}</div>
-                    <div className="text-[11px] text-gray-400">
-                      ({team} {isPick ? 'pick' : 'ban'})
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-3">
-            <div className="text-sm text-gray-400 mb-2">Match Info</div>
-            <div className="text-xs text-gray-300 space-y-1">
-              <div>
-                <strong>Match ID:</strong> {match.match_id ?? id}
-              </div>
-              {match.match_type && (
-                <div>
-                  <strong>Type:</strong> {match.match_type}
-                </div>
-              )}
-              {match.number_of_games != null && (
-                <div>
-                  <strong>Best of:</strong> {match.number_of_games}
-                </div>
-              )}
-              {match.forfeit && (
-                <div>
-                  <strong>Forfeit:</strong> Yes
-                </div>
-              )}
-              {match.rescheduled && (
-                <div>
-                  <strong>Rescheduled:</strong> Yes
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Players / teams */}
+      {/* Players (sample / full) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
         {/* Radiant */}
         <section
@@ -448,94 +418,67 @@ export default async function MatchPage({
           </div>
 
           <div className="space-y-2">
-            {radiantPlayers.map((p: any, idx: number) => {
-              const hero = heroForId(p.hero_id);
-              const playerName =
-                p.personaname ??
-                p.name ??
-                (p.account_id
-                  ? `Player ${p.account_id}`
-                  : `Slot ${p.player_slot}`);
-              const itemKeys = [];
-              for (let k = 0; k <= 5; k++) itemKeys.push(p[`item_${k}`]);
-              return (
-                <div
-                  key={idx}
-                  className="flex items-center justify-between bg-[#121212] border border-gray-800 rounded p-2"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
-                      {hero.url ? (
-                        <RenderImage
-                          src={hero.url}
-                          alt={hero.name}
-                          w={48}
-                          h={48}
-                        />
-                      ) : (
-                        <div className="text-xs text-white">
-                          {hero.name.slice(0, 2)}
+            {players
+              .filter(
+                (p) => typeof p.player_slot === 'number' && p.player_slot < 128
+              )
+              .map((p: AnyObj, idx: number) => {
+                const heroEntry = heroResolved.get(p.hero_id);
+                const heroName = heroEntry?.name ?? `Hero ${p.hero_id}`;
+                const heroUrl = heroEntry?.url ?? null;
+                const playerName =
+                  p.personaname ??
+                  p.name ??
+                  (p.account_id
+                    ? `Player ${p.account_id}`
+                    : `Slot ${p.player_slot}`);
+                const itemKeys = [];
+                for (let k = 0; k <= 5; k++) itemKeys.push(p[`item_${k}`]);
+                return (
+                  <div
+                    key={p.account_id ?? idx}
+                    className="flex items-center justify-between bg-[#121212] border border-gray-800 rounded p-2"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
+                        {heroUrl ? (
+                          <RenderImage
+                            src={heroUrl}
+                            alt={heroName}
+                            w={48}
+                            h={48}
+                          />
+                        ) : (
+                          <div className="text-xs text-white">
+                            {heroName.slice(0, 2)}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="min-w-0">
+                        <div
+                          className="text-sm font-medium text-gray-100 truncate"
+                          title={playerName}
+                        >
+                          {playerName}
                         </div>
-                      )}
-                    </div>
-
-                    <div className="min-w-0">
-                      <div
-                        className="text-sm font-medium text-gray-100 truncate"
-                        title={playerName}
-                      >
-                        {playerName}
-                      </div>
-                      <div className="text-xs text-gray-400 truncate">
-                        {hero.name}
+                        <div className="text-xs text-gray-400 truncate">
+                          {heroName}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-4 text-sm text-gray-200">
-                    <div className="text-xs text-gray-400">K</div>
-                    <div className="font-semibold">{p.kills ?? 0}</div>
-                    <div className="text-xs text-gray-400">D</div>
-                    <div className="font-semibold">{p.deaths ?? 0}</div>
-                    <div className="text-xs text-gray-400">A</div>
-                    <div className="font-semibold">{p.assists ?? 0}</div>
-                  </div>
-
-                  <div className="ml-4 flex items-center gap-2 min-w-0">
-                    <div className="flex gap-1">
-                      {itemKeys.map(
-                        (ik: string | null | undefined, i2: number) => {
-                          const it = mapItemKeyToData(ik);
-                          if (!it)
-                            return (
-                              <div
-                                key={i2}
-                                className="w-6 h-6 bg-gray-900 rounded"
-                              />
-                            );
-                          return it.img ? (
-                            <RenderImage
-                              key={i2}
-                              src={it.img}
-                              alt={it.dname ?? ''}
-                              w={24}
-                              h={24}
-                            />
-                          ) : (
-                            <div
-                              key={i2}
-                              className="text-[10px] px-1 py-0.5 bg-gray-900 rounded text-white"
-                            >
-                              {(it.dname ?? '').slice(0, 3)}
-                            </div>
-                          );
-                        }
-                      )}
+                    <div className="flex items-center gap-4 text-sm text-gray-200">
+                      <div className="text-xs text-gray-400">K</div>
+                      <div className="font-semibold">{p.kills ?? 0}</div>
+                      <div className="text-xs text-gray-400">D</div>
+                      <div className="font-semibold">{p.deaths ?? 0}</div>
+                      <div className="text-xs text-gray-400">A</div>
+                      <div className="font-semibold">{p.assists ?? 0}</div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
           </div>
         </section>
 
@@ -563,102 +506,73 @@ export default async function MatchPage({
           </div>
 
           <div className="space-y-2">
-            {direPlayers.map((p: any, idx: number) => {
-              const hero = heroForId(p.hero_id);
-              const playerName =
-                p.personaname ??
-                p.name ??
-                (p.account_id
-                  ? `Player ${p.account_id}`
-                  : `Slot ${p.player_slot}`);
-              const itemKeys = [];
-              for (let k = 0; k <= 5; k++) itemKeys.push(p[`item_${k}`]);
-              return (
-                <div
-                  key={idx}
-                  className="flex items-center justify-between bg-[#121212] border border-gray-800 rounded p-2"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
-                      {hero.url ? (
-                        <RenderImage
-                          src={hero.url}
-                          alt={hero.name}
-                          w={48}
-                          h={48}
-                        />
-                      ) : (
-                        <div className="text-xs text-white">
-                          {hero.name.slice(0, 2)}
+            {players
+              .filter(
+                (p) => typeof p.player_slot === 'number' && p.player_slot >= 128
+              )
+              .map((p: AnyObj, idx: number) => {
+                const heroEntry = heroResolved.get(p.hero_id);
+                const heroName = heroEntry?.name ?? `Hero ${p.hero_id}`;
+                const heroUrl = heroEntry?.url ?? null;
+                const playerName =
+                  p.personaname ??
+                  p.name ??
+                  (p.account_id
+                    ? `Player ${p.account_id}`
+                    : `Slot ${p.player_slot}`);
+                return (
+                  <div
+                    key={p.account_id ?? idx}
+                    className="flex items-center justify-between bg-[#121212] border border-gray-800 rounded p-2"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
+                        {heroUrl ? (
+                          <RenderImage
+                            src={heroUrl}
+                            alt={heroName}
+                            w={48}
+                            h={48}
+                          />
+                        ) : (
+                          <div className="text-xs text-white">
+                            {heroName.slice(0, 2)}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="min-w-0">
+                        <div
+                          className="text-sm font-medium text-gray-100 truncate"
+                          title={playerName}
+                        >
+                          {playerName}
                         </div>
-                      )}
-                    </div>
-
-                    <div className="min-w-0">
-                      <div
-                        className="text-sm font-medium text-gray-100 truncate"
-                        title={playerName}
-                      >
-                        {playerName}
-                      </div>
-                      <div className="text-xs text-gray-400 truncate">
-                        {hero.name}
+                        <div className="text-xs text-gray-400 truncate">
+                          {heroName}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-4 text-sm text-gray-200">
-                    <div className="text-xs text-gray-400">K</div>
-                    <div className="font-semibold">{p.kills ?? 0}</div>
-                    <div className="text-xs text-gray-400">D</div>
-                    <div className="font-semibold">{p.deaths ?? 0}</div>
-                    <div className="text-xs text-gray-400">A</div>
-                    <div className="font-semibold">{p.assists ?? 0}</div>
-                  </div>
-
-                  <div className="ml-4 flex items-center gap-2 min-w-0">
-                    <div className="flex gap-1">
-                      {itemKeys.map(
-                        (ik: string | null | undefined, i2: number) => {
-                          const it = mapItemKeyToData(ik);
-                          if (!it)
-                            return (
-                              <div
-                                key={i2}
-                                className="w-6 h-6 bg-gray-900 rounded"
-                              />
-                            );
-                          return it.img ? (
-                            <RenderImage
-                              key={i2}
-                              src={it.img}
-                              alt={it.dname ?? ''}
-                              w={24}
-                              h={24}
-                            />
-                          ) : (
-                            <div
-                              key={i2}
-                              className="text-[10px] px-1 py-0.5 bg-gray-900 rounded text-white"
-                            >
-                              {(it.dname ?? '').slice(0, 3)}
-                            </div>
-                          );
-                        }
-                      )}
+                    <div className="flex items-center gap-4 text-sm text-gray-200">
+                      <div className="text-xs text-gray-400">K</div>
+                      <div className="font-semibold">{p.kills ?? 0}</div>
+                      <div className="text-xs text-gray-400">D</div>
+                      <div className="font-semibold">{p.deaths ?? 0}</div>
+                      <div className="text-xs text-gray-400">A</div>
+                      <div className="font-semibold">{p.assists ?? 0}</div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
           </div>
         </section>
       </div>
 
-      {/* Raw JSON (collapsed) */}
+      {/* Raw payload for debugging */}
       <details className="mt-6 bg-[#0b0b0b] border border-gray-800 rounded p-3 text-xs text-gray-300">
         <summary className="cursor-pointer text-sm text-gray-200">
-          Raw OpenDota payload
+          Raw OpenDota match payload
         </summary>
         <pre className="mt-2 text-[10px] max-h-72 overflow-auto">
           {JSON.stringify(match, null, 2)}
