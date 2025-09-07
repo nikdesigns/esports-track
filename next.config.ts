@@ -1,12 +1,17 @@
-module.exports = {
+/** next.config.js */
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
   images: {
     domains: [
-      'cdn.steamusercontent.com',
-      'flagcdn.com',
+      'api.opendota.com',
       'cdn.opendota.com',
       'cdn.pandascore.co',
-      'images.weserv.nl',
-      'some-other-cdn.com',
+      'cdn.steamusercontent.com',
+      'images.igdb.com',
+      // add others you see in Network tab
     ],
   },
 };
+
+module.exports = nextConfig;
