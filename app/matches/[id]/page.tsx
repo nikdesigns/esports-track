@@ -1,833 +1,391 @@
 // app/matches/[id]/page.tsx
-import React from 'react';
-import Link from 'next/link';
-import ImageWithFallback from '@/components/ImageWithFallback';
+'use client';
 
-type AnyObj = Record<string, any>;
+import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Trophy, Clock } from 'lucide-react';
+import ImageWithFallback from '@/components/ImageWithFallback'; // if you have it — otherwise both places use <img> fallback
 
-/* --------------------
-   Endpoints & config
-   -------------------- */
-const MATCH_URL = (id: string | number) =>
-  `https://api.opendota.com/api/matches/${id}`;
-const HEROES_LIST_URL = 'https://api.opendota.com/api/heroes';
-const ITEMS_URL = 'https://api.opendota.com/api/constants/items';
+type MatchDetail = any;
+type HeroMeta = {
+  id: number;
+  name: string;
+  localized_name: string;
+  img_full?: string;
+  icon_full?: string;
+};
 
-/* hero image base and candidate suffixes */
-const HERO_IMG_BASE =
-  'https://api.opendota.com/apps/dota2/images/dota_react/heroes';
-const CANDIDATE_SUFFIXES = [
-  '_lg.png',
-  '.png',
-  '_portrait.png',
-  '_vert.png',
-  '_full.png',
-];
+export default function MatchPageClient({
+  params,
+}: {
+  params: { id: string };
+}) {
+  const { id } = params;
+  const router = useRouter();
+  const [match, setMatch] = useState<MatchDetail | null>(null);
+  const [heroes, setHeroes] = useState<Record<number | string, HeroMeta>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-/* Flag CDN base (small icons) */
-const FLAG_CDN = 'https://flagcdn.com'; // will use e.g. https://flagcdn.com/16x12/{cc}.png
-
-/* --------------------
-   Utilities
-   -------------------- */
-const toMs = (unixSeconds?: number | null) =>
-  typeof unixSeconds === 'number' ? unixSeconds * 1000 : null;
-
-function formatTime12Hour(msOrNull?: number | null) {
-  if (!msOrNull) return 'TBD';
-  try {
-    return new Date(msOrNull).toLocaleTimeString([], {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  } catch {
-    return 'TBD';
-  }
-}
-
-function formatDuration(sec?: number | null) {
-  if (!sec || sec <= 0) return '—';
-  const s = Math.floor(sec);
-  const hrs = Math.floor(s / 3600);
-  const mins = Math.floor((s % 3600) / 60);
-  const secs = s % 60;
-  if (hrs > 0)
-    return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(
-      2,
-      '0'
-    )}`;
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
-
-function sanitizeUrl(raw?: string | null) {
-  if (!raw || typeof raw !== 'string') return null;
-  let s = raw.trim();
-  while (s.endsWith('?') || s.endsWith('&')) s = s.slice(0, -1);
-  if (s.startsWith('/')) s = `https://api.opendota.com${s}`;
-  if (s.startsWith('http://')) s = 'https://' + s.slice(7);
-  return s || null;
-}
-
-/* --------------------
-   Fetch with retries + timeout
-   -------------------- */
-async function fetchWithRetries(
-  url: string,
-  retries = 3,
-  timeoutMs = 12000,
-  backoffMs = 500
-) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      console.log(`[fetchWithRetries] attempt ${attempt}/${retries} ${url}`);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) {
-        let body = '';
-        try {
-          body = await res.text();
-          if (body.length > 300) body = body.slice(0, 300) + '...';
-        } catch {}
-        console.warn(
-          `[fetchWithRetries] ${url} returned ${res.status} ${res.statusText}`,
-          body ? `body: ${body}` : ''
-        );
-        if (res.status >= 500 || res.status === 429) {
-          // allow retry
-        } else {
-          return null;
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        // fetch hero metadata
+        const [hRes, mRes] = await Promise.all([
+          fetch('/api/heroes'),
+          fetch(`/api/matches/${id}`),
+        ]);
+        if (!hRes.ok) {
+          const txt = await hRes.text().catch(() => '');
+          throw new Error(`/api/heroes error: ${hRes.status} ${txt}`);
         }
-      } else {
-        return await res.json();
+        if (!mRes.ok) {
+          const txt = await mRes.text().catch(() => '');
+          throw new Error(`/api/matches/${id} error: ${mRes.status} ${txt}`);
+        }
+
+        const heroesArr = await hRes.json();
+        const heroMap: Record<string | number, HeroMeta> = {};
+        for (const h of heroesArr) {
+          if (h && typeof h.id !== 'undefined') {
+            heroMap[h.id] = h;
+            // also attempt keyed by localized_name or name if you prefer later
+            heroMap[h.name] = h;
+            heroMap[h.localized_name] = h;
+          }
+        }
+
+        const mjson = await mRes.json();
+        if (!mounted) return;
+        setHeroes(heroMap);
+        setMatch(mjson);
+      } catch (err: any) {
+        console.error('Failed loading match detail or heroes', err);
+        setError(err?.message ?? 'Failed to load match details');
+      } finally {
+        if (mounted) setLoading(false);
       }
-    } catch (err: any) {
-      clearTimeout(timer);
-      if (err?.name === 'AbortError') {
-        console.warn(`[fetchWithRetries] timeout ${timeoutMs}ms for ${url}`);
-      } else {
-        console.warn(
-          `[fetchWithRetries] fetch error for ${url}:`,
-          err?.message ?? err
+    }
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="animate-pulse h-6 bg-[#111] w-48 mb-4 rounded" />
+        <div className="space-y-3">
+          <div className="h-28 bg-[#121212] rounded-xl animate-pulse" />
+          <div className="h-48 bg-[#121212] rounded-xl animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6">
+        <div className="text-red-400">{error}</div>
+      </div>
+    );
+  }
+
+  if (!match) {
+    return (
+      <div className="p-6">
+        <div className="text-gray-300">Match not found.</div>
+      </div>
+    );
+  }
+
+  // helper to resolve hero image — picks might store hero id or name
+  function heroImgFor(value: any) {
+    if (value == null) return null;
+    // If value is numeric hero id
+    if (typeof value === 'number' && heroes[value])
+      return heroes[value].img_full ?? heroes[value].icon_full ?? null;
+    // If value is string (like "npc_dota_hero_antimage" or localized name)
+    if (typeof value === 'string') {
+      const h =
+        heroes[value] ??
+        Object.values(heroes).find(
+          (hh) => hh.localized_name === value || hh.name === value
         );
-      }
+      if (h) return h.img_full ?? h.icon_full ?? null;
+      // sometimes picks are 'antimage' — try to find by endsWith
+      const found = Object.values(heroes).find(
+        (hh) =>
+          hh.name?.endsWith(value) ||
+          hh.localized_name?.toLowerCase() === value.toLowerCase()
+      );
+      if (found) return found.img_full ?? found.icon_full ?? null;
     }
-    if (attempt < retries) {
-      const waitMs = backoffMs * Math.pow(2, attempt - 1);
-      await new Promise((r) => setTimeout(r, waitMs));
-    }
-  }
-  console.error(`[fetchWithRetries] all ${retries} attempts failed for ${url}`);
-  return null;
-}
-
-/* --------------------
-   HEAD-check helper & server cache for hero urls
-   -------------------- */
-const heroUrlCache = new Map<number, string | null>(); // heroId -> url or null
-
-async function urlExistsHEAD(url: string) {
-  try {
-    const res = await fetch(url, { method: 'HEAD' });
-    return res.ok;
-  } catch (e) {
-    return false;
-  }
-}
-
-function baseHeroNameFrom(heroName: string | undefined | null) {
-  if (!heroName || typeof heroName !== 'string') return null;
-  const maybe = heroName.replace(/^npc_dota_hero_/, '');
-  return maybe
-    .toLowerCase()
-    .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9_]/g, '');
-}
-
-/* Resolve hero url server-side by trying explicit fields then candidate filenames */
-async function resolveHeroUrlServer(hid: number, heroApiEntry?: AnyObj | null) {
-  // check cache
-  if (heroUrlCache.has(hid)) return heroUrlCache.get(hid) ?? null;
-
-  // try explicit img/icon fields first (some APIs may include these)
-  const explicitImg = sanitizeUrl(heroApiEntry?.img ?? null);
-  const explicitIcon = sanitizeUrl(heroApiEntry?.icon ?? null);
-
-  if (explicitImg && (await urlExistsHEAD(explicitImg))) {
-    heroUrlCache.set(hid, explicitImg);
-    return explicitImg;
-  }
-  if (explicitIcon && (await urlExistsHEAD(explicitIcon))) {
-    heroUrlCache.set(hid, explicitIcon);
-    return explicitIcon;
-  }
-
-  // build base from name (e.g. npc_dota_hero_nevermore -> nevermore)
-  const base = baseHeroNameFrom(
-    heroApiEntry?.name ?? heroApiEntry?.localized_name ?? ''
-  );
-  if (!base) {
-    heroUrlCache.set(hid, null);
     return null;
   }
 
-  // try candidate suffixes in order
-  for (const suf of CANDIDATE_SUFFIXES) {
-    const cand = `${HERO_IMG_BASE}/${base}${suf}`;
-    if (await urlExistsHEAD(cand)) {
-      heroUrlCache.set(hid, cand);
-      return cand;
-    }
-  }
+  const winnerId = match.winner_id ?? match.winner?.id ?? null;
 
-  // try plain .png as last resort
-  const plain = `${HERO_IMG_BASE}/${base}.png`;
-  if (await urlExistsHEAD(plain)) {
-    heroUrlCache.set(hid, plain);
-    return plain;
-  }
-
-  heroUrlCache.set(hid, null);
-  return null;
-}
-
-/* --------------------
-   Team helpers
-   -------------------- */
-/**
- * Extract team info for a side ('radiant' | 'dire') in a robust way.
- * Returns { id?, name?, logoUrl?, countryCode? } — all fields optional.
- */
-function getTeamInfo(match: AnyObj, side: 'radiant' | 'dire') {
-  // try radiant_team / dire_team first
-  const teamField = side === 'radiant' ? match.radiant_team : match.dire_team;
-  if (teamField && typeof teamField === 'object') {
-    const id = teamField.id ?? teamField.team_id ?? teamField.teamId ?? null;
-    const name = teamField.name ?? teamField.tag ?? teamField.acronym ?? null;
-    const logoUrl = sanitizeUrl(
-      teamField.logo_url ??
-        teamField.logo ??
-        teamField.image_url ??
-        teamField.image ??
-        null
-    );
-    const country =
-      teamField.location ?? teamField.country ?? teamField.region ?? null
-        ? String(
-            teamField.location ?? teamField.country ?? teamField.region
-          ).toLowerCase()
-        : null;
-    return { id, name, logoUrl, country };
-  }
-
-  // fallback to opponents array (commonly used)
-  if (Array.isArray(match.opponents)) {
-    const idx = side === 'radiant' ? 0 : 1;
-    const opp =
-      match.opponents[idx] && match.opponents[idx].opponent
-        ? match.opponents[idx].opponent
-        : null;
-    if (opp) {
-      const id = opp.id ?? null;
-      const name = opp.name ?? opp.acronym ?? opp.tag ?? null;
-      const logoUrl = sanitizeUrl(
-        opp.image_url ?? opp.logo_url ?? opp.logo ?? opp.image ?? null
-      );
-      const country =
-        opp.location ?? opp.country ?? opp.region ?? null
-          ? String(opp.location ?? opp.country ?? opp.region).toLowerCase()
-          : null;
-      return { id, name, logoUrl, country };
-    }
-  }
-
-  // try winner object as last resort (not ideal)
-  if (match.winner && typeof match.winner === 'object') {
-    const id = match.winner.id ?? null;
-    const name = match.winner.name ?? null;
-    const logoUrl = sanitizeUrl(
-      match.winner.image_url ?? match.winner.image ?? null
-    );
-    const country =
-      match.winner.location ?? match.winner.country ?? null
-        ? String(match.winner.location ?? match.winner.country).toLowerCase()
-        : null;
-    return { id, name, logoUrl, country };
-  }
-
-  return { id: null, name: null, logoUrl: null, country: null };
-}
-
-/* small helper to build flag url from country code (ISO2) */
-function flagUrlFromCountry(country?: string | null, size = '16x12') {
-  if (!country || typeof country !== 'string') return null;
-  const cc = country.slice(0, 2).toLowerCase();
-  // FlagCDN path example: https://flagcdn.com/16x12/no.png
-  return `https://flagcdn.com/${size}/${cc}.png`;
-}
-
-/* --------------------
-   Page component (Server)
-   -------------------- */
-export default async function MatchPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-
-  // fetch match, heroes list, and items (concurrently)
-  const [matchJson, heroesListJson, itemsJson] = await Promise.all([
-    fetchWithRetries(MATCH_URL(id), 3, 15000, 500),
-    fetchWithRetries(HEROES_LIST_URL, 2, 10000, 400),
-    fetchWithRetries(ITEMS_URL, 2, 10000, 400),
-  ]);
-
-  // debug: log heroes list sample to help debugging
-  if (Array.isArray(heroesListJson)) {
-    console.log(
-      'DEBUG heroesListJson sample (first 6):',
-      heroesListJson.slice(0, 6)
-    );
-  } else {
-    console.log('DEBUG heroesListJson: not available or not array');
-  }
-
-  if (!matchJson) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <h1 className="text-2xl font-bold text-white mb-4">Match {id}</h1>
-        <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 text-red-300">
-          <p>
-            Unable to load match details from OpenDota after several attempts.
-          </p>
-          <p className="mt-2 text-xs text-gray-400">
-            Check server console for debug logs (heroes list, resolved hero
-            URLs, errors).
-          </p>
-        </div>
-        <div className="mt-4">
-          <Link href="/">
-            <span className="text-xs text-gray-400 hover:text-white">
-              ← Back to matches
-            </span>
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const match: AnyObj = matchJson as AnyObj;
-
-  // Build a map from heroId -> hero API entry (if available)
-  const heroApiMap = new Map<number, AnyObj | null>();
-  if (Array.isArray(heroesListJson)) {
-    for (const h of heroesListJson) {
-      if (!h || typeof h.id !== 'number') continue;
-      heroApiMap.set(h.id, h);
-    }
-  }
-
-  // players & picks_bans
-  const players: AnyObj[] = Array.isArray(match.players) ? match.players : [];
-  const picksBans: AnyObj[] = Array.isArray(match.picks_bans)
-    ? match.picks_bans
-    : [];
-
-  // collect unique hero ids used
-  const usedHeroIds = new Set<number>();
-  players.forEach((p) => {
-    if (typeof p.hero_id === 'number') usedHeroIds.add(p.hero_id);
-  });
-  picksBans.forEach((pb) => {
-    if (typeof pb.hero_id === 'number') usedHeroIds.add(pb.hero_id);
-  });
-
-  // Resolve hero urls server-side in parallel (caches applied)
-  const resolvePromises = Array.from(usedHeroIds).map(async (hid) => {
-    const apiEntry = heroApiMap.get(hid) ?? null;
-    const url = await resolveHeroUrlServer(hid, apiEntry);
-    const name = apiEntry?.localized_name ?? apiEntry?.name ?? `Hero ${hid}`;
-    return { hid, name, url };
-  });
-
-  const resolved = await Promise.all(resolvePromises);
-  const heroResolved = new Map<number, { name: string; url?: string | null }>();
-  for (const r of resolved) {
-    heroResolved.set(r.hid, { name: r.name, url: r.url ?? null });
-  }
-
-  // Debug: log resolved results (first 20)
-  console.log(
-    'DEBUG heroResolved after HEAD-check (sample):',
-    Array.from(heroResolved.entries()).slice(0, 20)
-  );
-
-  // items map for item icons
-  const itemMap = new Map<string, { dname?: string; img?: string }>();
-  if (itemsJson && typeof itemsJson === 'object') {
-    for (const k of Object.keys(itemsJson)) {
-      const it = (itemsJson as AnyObj)[k];
-      if (!it) continue;
-      itemMap.set(k, {
-        dname: it.dname ?? it.name ?? k,
-        img: sanitizeUrl(it.img ?? null),
-      });
-    }
-  }
-
-  // prepare view fields
-  const radiantTeamInfo = getTeamInfo(match, 'radiant');
-  const direTeamInfo = getTeamInfo(match, 'dire');
-
-  const radiantName =
-    match.radiant_name ??
-    radiantTeamInfo.name ??
-    match.radiant_team?.tag ??
-    'Radiant';
-  const direName =
-    match.dire_name ?? direTeamInfo.name ?? match.dire_team?.tag ?? 'Dire';
-  const radiantScore =
-    typeof match.radiant_score === 'number' ? match.radiant_score : null;
-  const direScore =
-    typeof match.dire_score === 'number' ? match.dire_score : null;
-  const startTimeMs = toMs(match.start_time ?? null);
-  const tournament =
-    match.tournament?.name ?? match.tournament ?? match.tournament_id ?? null;
-  const winnerside =
-    typeof match.radiant_win === 'boolean'
-      ? match.radiant_win
-        ? 'radiant'
-        : 'dire'
-      : null;
-
-  // Flags
-  const radiantFlag = flagUrlFromCountry(radiantTeamInfo.country);
-  const direFlag = flagUrlFromCountry(direTeamInfo.country);
-
-  // small helper component that uses your client-side ImageWithFallback
-  const RenderImage = (props: {
-    src?: string | null;
-    alt?: string;
-    w: number;
-    h: number;
-    className?: string;
-  }) => {
-    if (!props.src)
-      return (
-        <div
-          style={{ width: props.w, height: props.h }}
-          className="bg-gray-700 rounded-md"
-        />
-      );
-    return (
-      <ImageWithFallback
-        src={props.src}
-        alt={props.alt}
-        width={props.w}
-        height={props.h}
-        className={props.className}
-      />
-    );
-  };
-
-  // UI render
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-6">
+    <div className="p-6 space-y-6">
+      {/* Header: tournament name + league + game badge */}
+      <header className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-4 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">
-            {match.name ?? `${radiantName} vs ${direName}`}
-          </h1>
-          <div className="mt-2 flex items-center gap-3 text-sm text-gray-400">
-            {/* tournament */}
-            {tournament ? <span className="mr-2">• {tournament}</span> : null}
-            {/* league/time */}
-            {startTimeMs ? (
-              <span className="text-xs text-gray-400">
-                {' '}
-                • {formatTime12Hour(startTimeMs)}
-              </span>
-            ) : null}
+          <div className="text-xs text-gray-400">
+            {match.league?.name ??
+              match.raw?.league?.name ??
+              match.raw?.tournament?.name}
           </div>
+          <h1 className="text-2xl font-bold text-white">{match.name}</h1>
+          <div className="text-xs text-gray-400 mt-1">
+            {match.status === 'running' ? (
+              <span className="flex items-center text-red-400">
+                <Trophy className="h-4 w-4 mr-2 text-red-400" /> Live
+              </span>
+            ) : match.status === 'not_started' ? (
+              <span className="flex items-center text-blue-400">
+                <Clock className="h-4 w-4 mr-2" /> Scheduled
+              </span>
+            ) : (
+              <span className="text-green-400">Finished</span>
+            )}
+          </div>
+        </div>
 
-          {/* Team badges row (small logos beside names) */}
-          <div className="mt-3 flex items-center gap-6">
-            <div className="flex items-center gap-2">
-              {/* Link to team page if id exists */}
-              {radiantTeamInfo.id ? (
-                <Link
-                  href={`/teams/${radiantTeamInfo.id}`}
-                  className="flex items-center gap-2"
-                >
-                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
-                    {radiantTeamInfo.logoUrl ? (
-                      <ImageWithFallback
-                        src={radiantTeamInfo.logoUrl}
-                        alt={radiantName}
-                        width={32}
-                        height={32}
-                      />
-                    ) : (
-                      <div className="w-8 h-8 bg-gray-700" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="text-sm text-gray-200 font-medium">
-                      {radiantName}
-                    </div>
-                    {radiantFlag ? (
-                      <ImageWithFallback
-                        src={radiantFlag}
-                        alt="flag"
-                        width={16}
-                        height={12}
-                      />
-                    ) : null}
-                  </div>
-                </Link>
+        <div className="flex items-center gap-4">
+          <div className="text-sm text-gray-300">
+            {match.videogame?.slug ?? 'Dota 2'}
+          </div>
+          <div className="text-xs text-gray-400">
+            {match.scheduled_at
+              ? new Date(match.scheduled_at).toLocaleString([], {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                })
+              : ''}
+          </div>
+        </div>
+      </header>
+
+      {/* Score card */}
+      <div className="bg-[#121212] border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          {/* Team A */}
+          <div className="flex items-center gap-3">
+            <div className="w-14 h-14 rounded-full overflow-hidden bg-gray-800 flex items-center justify-center">
+              {match.opponents?.[0]?.opponent?.image_url ? (
+                // using <img> here to avoid next/image host config issues
+                <img
+                  src={match.opponents[0].opponent.image_url}
+                  alt={match.opponents[0].opponent.name}
+                  width={56}
+                  height={56}
+                  className="object-contain"
+                />
               ) : (
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
-                    {radiantTeamInfo.logoUrl ? (
-                      <ImageWithFallback
-                        src={radiantTeamInfo.logoUrl}
-                        alt={radiantName}
-                        width={32}
-                        height={32}
-                      />
-                    ) : (
-                      <div className="w-8 h-8 bg-gray-700" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="text-sm text-gray-200 font-medium">
-                      {radiantName}
-                    </div>
-                    {radiantFlag ? (
-                      <ImageWithFallback
-                        src={radiantFlag}
-                        alt="flag"
-                        width={16}
-                        height={12}
-                      />
-                    ) : null}
-                  </div>
+                <div className="w-14 h-14 bg-gray-700 flex items-center justify-center text-xs text-white">
+                  T
                 </div>
               )}
             </div>
-
-            <div className="text-sm text-gray-400">vs</div>
-
-            <div className="flex items-center gap-2">
-              {direTeamInfo.id ? (
-                <Link
-                  href={`/teams/${direTeamInfo.id}`}
-                  className="flex items-center gap-2"
-                >
-                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
-                    {direTeamInfo.logoUrl ? (
-                      <ImageWithFallback
-                        src={direTeamInfo.logoUrl}
-                        alt={direName}
-                        width={32}
-                        height={32}
-                      />
-                    ) : (
-                      <div className="w-8 h-8 bg-gray-700" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="text-sm text-gray-200 font-medium">
-                      {direName}
-                    </div>
-                    {direFlag ? (
-                      <ImageWithFallback
-                        src={direFlag}
-                        alt="flag"
-                        width={16}
-                        height={12}
-                      />
-                    ) : null}
-                  </div>
-                </Link>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
-                    {direTeamInfo.logoUrl ? (
-                      <ImageWithFallback
-                        src={direTeamInfo.logoUrl}
-                        alt={direName}
-                        width={32}
-                        height={32}
-                      />
-                    ) : (
-                      <div className="w-8 h-8 bg-gray-700" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="text-sm text-gray-200 font-medium">
-                      {direName}
-                    </div>
-                    {direFlag ? (
-                      <ImageWithFallback
-                        src={direFlag}
-                        alt="flag"
-                        width={16}
-                        height={12}
-                      />
-                    ) : null}
-                  </div>
-                </div>
-              )}
+            <div className="text-left">
+              <div
+                className={`text-lg font-semibold ${
+                  winnerId && match.opponents?.[0]?.opponent?.id === winnerId
+                    ? 'text-green-400'
+                    : 'text-white'
+                }`}
+              >
+                {match.opponents?.[0]?.opponent?.acronym ??
+                  match.opponents?.[0]?.opponent?.name}
+                {winnerId &&
+                  match.opponents?.[0]?.opponent?.id === winnerId && (
+                    <span className="ml-2 text-yellow-400">🏆</span>
+                  )}
+              </div>
+              <div className="text-xs text-gray-400">
+                {/* optional country or tag */}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="text-right">
-          <div className="text-3xl font-extrabold text-white">
-            {radiantScore == null && direScore == null
-              ? '--'
-              : `${radiantScore ?? 0} - ${direScore ?? 0}`}
+        <div className="text-center">
+          <div className="text-3xl font-bold text-white">
+            {(match.score && match.score[0] != null) ||
+            (match.score && match.score[1] != null)
+              ? `${match.score?.[0] ?? 0} - ${match.score?.[1] ?? 0}`
+              : '--'}
           </div>
           <div className="text-xs text-gray-400 mt-1">
-            {winnerside
-              ? 'Finished'
-              : match.start_time && toMs(match.start_time)! <= Date.now()
+            {match.status === 'running'
               ? 'Live'
+              : match.status === 'finished'
+              ? 'Finished'
               : 'Scheduled'}
           </div>
         </div>
-      </div>
 
-      {/* Players (full) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        {/* Radiant */}
-        <section
-          className={`bg-[#0f0f0f] border ${
-            winnerside === 'radiant' ? 'border-yellow-500' : 'border-gray-800'
-          } rounded-xl p-4`}
-        >
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
-                {radiantTeamInfo.logoUrl ? (
-                  <ImageWithFallback
-                    src={radiantTeamInfo.logoUrl}
-                    alt={radiantName}
-                    width={32}
-                    height={32}
-                  />
-                ) : (
-                  <div className="w-8 h-8 bg-gray-700" />
-                )}
-              </div>
-              <div>
-                <div className="text-sm text-gray-400">Radiant</div>
-                <div className="text-lg font-semibold text-white">
-                  {radiantName}
-                </div>
-              </div>
-            </div>
-
+        <div className="flex items-center gap-4">
+          {/* Team B */}
+          <div className="flex items-center gap-3">
             <div className="text-right">
-              <div className="text-xs text-gray-400">Score</div>
               <div
-                className={`text-xl font-bold ${
-                  winnerside === 'radiant' ? 'text-yellow-400' : 'text-white'
+                className={`text-lg font-semibold ${
+                  winnerId && match.opponents?.[1]?.opponent?.id === winnerId
+                    ? 'text-green-400'
+                    : 'text-white'
                 }`}
               >
-                {radiantScore ?? '—'}
+                {match.opponents?.[1]?.opponent?.acronym ??
+                  match.opponents?.[1]?.opponent?.name}
+                {winnerId &&
+                  match.opponents?.[1]?.opponent?.id === winnerId && (
+                    <span className="ml-2 text-yellow-400">🏆</span>
+                  )}
               </div>
+              <div className="text-xs text-gray-400" />
             </div>
-          </div>
-
-          <div className="space-y-2">
-            {players
-              .filter(
-                (p) => typeof p.player_slot === 'number' && p.player_slot < 128
-              )
-              .map((p: AnyObj, idx: number) => {
-                const heroEntry = heroResolved.get(p.hero_id);
-                const heroName = heroEntry?.name ?? `Hero ${p.hero_id}`;
-                const heroUrl = heroEntry?.url ?? null;
-                const playerName =
-                  p.personaname ??
-                  p.name ??
-                  (p.account_id
-                    ? `Player ${p.account_id}`
-                    : `Slot ${p.player_slot}`);
-                return (
-                  <div
-                    key={p.account_id ?? idx}
-                    className="flex items-center justify-between bg-[#121212] border border-gray-800 rounded p-2"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
-                        {heroUrl ? (
-                          <ImageWithFallback
-                            src={heroUrl}
-                            alt={heroName}
-                            width={48}
-                            height={48}
-                          />
-                        ) : (
-                          <div className="text-xs text-white">
-                            {heroName.slice(0, 2)}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="min-w-0">
-                        <div
-                          className="text-sm font-medium text-gray-100 truncate"
-                          title={playerName}
-                        >
-                          {playerName}
-                        </div>
-                        <div className="text-xs text-gray-400 truncate">
-                          {heroName}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-4 text-sm text-gray-200">
-                      <div className="text-xs text-gray-400">K</div>
-                      <div className="font-semibold">{p.kills ?? 0}</div>
-                      <div className="text-xs text-gray-400">D</div>
-                      <div className="font-semibold">{p.deaths ?? 0}</div>
-                      <div className="text-xs text-gray-400">A</div>
-                      <div className="font-semibold">{p.assists ?? 0}</div>
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-        </section>
-
-        {/* Dire */}
-        <section
-          className={`bg-[#0f0f0f] border ${
-            winnerside === 'dire' ? 'border-yellow-500' : 'border-gray-800'
-          } rounded-xl p-4`}
-        >
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-800">
-                {direTeamInfo.logoUrl ? (
-                  <ImageWithFallback
-                    src={direTeamInfo.logoUrl}
-                    alt={direName}
-                    width={32}
-                    height={32}
-                  />
-                ) : (
-                  <div className="w-8 h-8 bg-gray-700" />
-                )}
-              </div>
-              <div>
-                <div className="text-sm text-gray-400">Dire</div>
-                <div className="text-lg font-semibold text-white">
-                  {direName}
+            <div className="w-14 h-14 rounded-full overflow-hidden bg-gray-800 flex items-center justify-center">
+              {match.opponents?.[1]?.opponent?.image_url ? (
+                <img
+                  src={match.opponents[1].opponent.image_url}
+                  alt={match.opponents[1].opponent.name}
+                  width={56}
+                  height={56}
+                  className="object-contain"
+                />
+              ) : (
+                <div className="w-14 h-14 bg-gray-700 flex items-center justify-center text-xs text-white">
+                  T
                 </div>
-              </div>
-            </div>
-
-            <div className="text-right">
-              <div className="text-xs text-gray-400">Score</div>
-              <div
-                className={`text-xl font-bold ${
-                  winnerside === 'dire' ? 'text-yellow-400' : 'text-white'
-                }`}
-              >
-                {direScore ?? '—'}
-              </div>
+              )}
             </div>
           </div>
+        </div>
+      </div>
 
-          <div className="space-y-2">
-            {players
-              .filter(
-                (p) => typeof p.player_slot === 'number' && p.player_slot >= 128
-              )
-              .map((p: AnyObj, idx: number) => {
-                const heroEntry = heroResolved.get(p.hero_id);
-                const heroName = heroEntry?.name ?? `Hero ${p.hero_id}`;
-                const heroUrl = heroEntry?.url ?? null;
-                const playerName =
-                  p.personaname ??
-                  p.name ??
-                  (p.account_id
-                    ? `Player ${p.account_id}`
-                    : `Slot ${p.player_slot}`);
-                return (
-                  <div
-                    key={p.account_id ?? idx}
-                    className="flex items-center justify-between bg-[#121212] border border-gray-800 rounded p-2"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-12 h-12 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
-                        {heroUrl ? (
-                          <ImageWithFallback
-                            src={heroUrl}
-                            alt={heroName}
-                            width={48}
-                            height={48}
-                          />
-                        ) : (
-                          <div className="text-xs text-white">
-                            {heroName.slice(0, 2)}
-                          </div>
-                        )}
-                      </div>
+      {/* Picks / Drafts */}
+      {match.picks && Array.isArray(match.picks) && (
+        <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-white mb-3">
+            Hero Picks / Draft
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Try to render picks grouped by team if possible */}
+            <div>
+              <div className="text-xs text-gray-400 mb-1">Team A</div>
+              <div className="flex flex-wrap gap-2">
+                {match.picks.map((p: any, idx: number) => {
+                  // picks might be objects or hero ids/strings
+                  const heroKey = p.heroId ?? p.hero_id ?? p.hero ?? p;
+                  const img = heroImgFor(heroKey);
+                  return (
+                    <div
+                      key={`a-${idx}`}
+                      className="w-14 h-14 rounded overflow-hidden bg-[#121212] border border-gray-800 flex items-center justify-center"
+                    >
+                      {img ? (
+                        <img
+                          src={img}
+                          alt={String(heroKey)}
+                          className="object-contain w-full h-full"
+                        />
+                      ) : (
+                        <div className="text-xs text-gray-400">Hero</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
 
-                      <div className="min-w-0">
+            <div>
+              <div className="text-xs text-gray-400 mb-1">Team B</div>
+              <div className="flex flex-wrap gap-2">
+                {/* If picks structure contains sides, attempt to show second team's picks; otherwise duplicate */}
+                {match.picksB && Array.isArray(match.picksB)
+                  ? match.picksB.map((p: any, idx: number) => {
+                      const heroKey = p.heroId ?? p.hero_id ?? p.hero ?? p;
+                      const img = heroImgFor(heroKey);
+                      return (
                         <div
-                          className="text-sm font-medium text-gray-100 truncate"
-                          title={playerName}
+                          key={`b-${idx}`}
+                          className="w-14 h-14 rounded overflow-hidden bg-[#121212] border border-gray-800 flex items-center justify-center"
                         >
-                          {playerName}
+                          {img ? (
+                            <img
+                              src={img}
+                              alt={String(heroKey)}
+                              className="object-contain w-full h-full"
+                            />
+                          ) : (
+                            <div className="text-xs text-gray-400">Hero</div>
+                          )}
                         </div>
-                        <div className="text-xs text-gray-400 truncate">
-                          {heroName}
+                      );
+                    })
+                  : match.picks.map((p: any, idx: number) => {
+                      const heroKey = p.heroId ?? p.hero_id ?? p.hero ?? p;
+                      const img = heroImgFor(heroKey);
+                      return (
+                        <div
+                          key={`bdup-${idx}`}
+                          className="w-14 h-14 rounded overflow-hidden bg-[#121212] border border-gray-800 flex items-center justify-center"
+                        >
+                          {img ? (
+                            <img
+                              src={img}
+                              alt={String(heroKey)}
+                              className="object-contain w-full h-full"
+                            />
+                          ) : (
+                            <div className="text-xs text-gray-400">Hero</div>
+                          )}
                         </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-4 text-sm text-gray-200">
-                      <div className="text-xs text-gray-400">K</div>
-                      <div className="font-semibold">{p.kills ?? 0}</div>
-                      <div className="text-xs text-gray-400">D</div>
-                      <div className="font-semibold">{p.deaths ?? 0}</div>
-                      <div className="text-xs text-gray-400">A</div>
-                      <div className="font-semibold">{p.assists ?? 0}</div>
-                    </div>
-                  </div>
-                );
-              })}
+                      );
+                    })}
+              </div>
+            </div>
           </div>
-        </section>
-      </div>
+        </div>
+      )}
 
-      {/* Raw payload for debugging */}
-      <details className="mt-6 bg-[#0b0b0b] border border-gray-800 rounded p-3 text-xs text-gray-300">
-        <summary className="cursor-pointer text-sm text-gray-200">
-          Raw OpenDota match payload
-        </summary>
-        <pre className="mt-2 text-[10px] max-h-72 overflow-auto">
-          {JSON.stringify(match, null, 2)}
-        </pre>
-      </details>
-
-      <div className="mt-6">
-        <Link href="/">
-          <span className="text-xs text-gray-400 hover:text-white">
-            ← Back to matches
-          </span>
-        </Link>
-      </div>
+      {/* Maps / Game breakdown */}
+      {match.maps && (
+        <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-white mb-3">
+            Maps / Games
+          </h3>
+          <div className="space-y-2">
+            {Array.isArray(match.maps) ? (
+              match.maps.map((map: any, idx: number) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between bg-[#121212] p-3 rounded"
+                >
+                  <div className="text-sm text-gray-200">
+                    {map.mapName ?? map.name ?? `Game ${idx + 1}`}
+                  </div>
+                  <div className="text-sm text-gray-300">
+                    {map.teamAScore != null
+                      ? `${map.teamAScore} - ${map.teamBScore}`
+                      : map.result ?? '--'}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-gray-400">No map breakdown available.</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

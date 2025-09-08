@@ -1,300 +1,373 @@
 // app/page.tsx
-import React from 'react';
-import Link from 'next/link';
-import Image from 'next/image';
-import LoadMoreButton from '@/components/LoadMoreButton';
+'use client';
 
-type OpenDotaProMatch = {
-  match_id: number;
-  radiant_name?: string | null;
-  dire_name?: string | null;
-  radiant_score?: number | null;
-  dire_score?: number | null;
-  start_time?: number | null; // unix seconds
-  league_name?: string | null;
-  tournament?: { id?: number; name?: string } | null;
-  radiant_team_id?: number | null;
-  dire_team_id?: number | null;
-  radiant_win?: boolean | null;
-  name?: string | null;
-};
+import React, { useEffect, useMemo, useState } from 'react';
+import MatchCard from '@/components/MatchCard';
+import ImageWithFallback from '@/components/ImageWithFallback';
+import useFollowedTeams from '@/hooks/useFollowedTeams';
+import { Search } from 'lucide-react';
+import HeroTrends from '@/components/HeroTrends';
 
-type TeamInfo = {
-  team_id?: number;
-  name?: string;
-  tag?: string | null;
-  logo_url?: string | null;
-};
+/**
+ * Home page (client) - Escharts-inspired layout
+ * Uses API_ENDPOINT '/api/matches' — ensure that route exists (see app/api/matches/route.ts).
+ */
 
-const DEFAULT_PAGE_SIZE = 20;
+const API_ENDPOINT = '/api/matches';
 
-const toMs = (unixSeconds?: number | null) =>
-  typeof unixSeconds === 'number' ? unixSeconds * 1000 : null;
+type MatchType = any;
 
-function format12Hour(msOrNull?: number | null) {
-  if (!msOrNull) return 'TBD';
-  try {
-    const d = new Date(msOrNull);
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  } catch {
-    return 'TBD';
-  }
-}
+export default function HomePage() {
+  const [matches, setMatches] = useState<MatchType[]>([]);
+  const [page, setPage] = useState<number>(1);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
 
-function getStatusFromMatch(m: {
-  radiantScore?: number | null;
-  direScore?: number | null;
-  startTime?: number | null;
-  radiantWin?: boolean | null;
-}) {
-  const now = Date.now();
-  const startMs = m.startTime ?? null;
-  const hasScores =
-    typeof m.radiantScore === 'number' || typeof m.direScore === 'number';
-  if (typeof m.radiantWin === 'boolean') return 'finished';
-  if (startMs && startMs <= now && hasScores) return 'running';
-  if (startMs && startMs > now) return 'scheduled';
-  if (hasScores) return 'running';
-  return 'scheduled';
-}
+  const [filter, setFilter] = useState<
+    'all' | 'running' | 'not_started' | 'finished'
+  >('all');
+  const [query, setQuery] = useState('');
+  const { allFollowedIds } = useFollowedTeams();
+  const [featured, setFeatured] = useState<MatchType[]>([]);
 
-function statusPill(status: string) {
-  if (status === 'running')
-    return (
-      <span className="inline-flex items-center gap-2 text-xs font-semibold text-red-400">
-        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-        Live
-      </span>
-    );
-  if (status === 'finished')
-    return (
-      <span className="inline-flex items-center text-xs font-semibold text-green-400">
-        Finished
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center text-xs font-semibold text-blue-300">
-      Scheduled
-    </span>
-  );
-}
+  useEffect(() => {
+    fetchMatches(1, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
 
-export default async function HomePage({
-  searchParams,
-}: {
-  searchParams?: { count?: string };
-}) {
-  const countParam =
-    Number(searchParams?.count ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE;
+  // --- hardened fetchMatches: surfaces upstream body when non-OK ---
+  async function fetchMatches(p = 1, replace = false) {
+    setLoading(true);
+    setError(null);
 
-  // Fetch pro matches (server-side); defensive
-  let proJson: OpenDotaProMatch[] = [];
-  try {
-    const proRes = await fetch(`https://api.opendota.com/api/proMatches`, {
-      next: { revalidate: 60 },
-    });
-    if (proRes.ok) proJson = (await proRes.json()) as OpenDotaProMatch[];
-    else {
-      console.error('OpenDota /proMatches returned', proRes.status);
-      proJson = [];
-    }
-  } catch (err) {
-    console.error('Network error fetching proMatches:', err);
-    proJson = [];
-  }
-
-  // slice to desired count (server-side)
-  const sliced = proJson.slice(0, Math.max(countParam, DEFAULT_PAGE_SIZE));
-
-  // Collect team ids then fetch team info in parallel
-  const teamIds = new Set<number>();
-  for (const m of sliced) {
-    if (m.radiant_team_id) teamIds.add(m.radiant_team_id);
-    if (m.dire_team_id) teamIds.add(m.dire_team_id);
-  }
-
-  const teamFetches: Promise<[number, TeamInfo | null]>[] = Array.from(
-    teamIds
-  ).map(async (id) => {
     try {
-      const r = await fetch(`https://api.opendota.com/api/teams/${id}`, {
-        next: { revalidate: 3600 },
+      const url = new URL(API_ENDPOINT, window.location.origin);
+      url.searchParams.set('per_page', '12');
+      url.searchParams.set('page', String(p));
+      if (filter !== 'all') url.searchParams.set('filter[status]', filter);
+
+      console.log('[client] fetching matches from', url.toString());
+      const res = await fetch(url.toString(), { cache: 'no-store' });
+
+      if (!res.ok) {
+        // read body (helps debugging 502/502 upstream)
+        const bodyText = await res.text().catch(() => '[no body]');
+        console.error('[client] /api/matches returned', res.status, bodyText);
+        setError(`Server error ${res.status}: ${bodyText}`);
+        setLoading(false);
+        return;
+      }
+
+      const data = await res.json().catch((e) => {
+        console.error('[client] failed to parse JSON from /api/matches', e);
+        setError('Invalid JSON response from server');
+        setLoading(false);
+        return null;
       });
-      if (!r.ok) return [id, null];
-      const j = (await r.json()) as TeamInfo;
-      return [id, j];
-    } catch (err) {
-      console.warn('Team fetch failed for', id, err);
-      return [id, null];
+      if (data === null) return;
+
+      const items = Array.isArray(data) ? data : data.matches ?? [];
+      setHasMore(items.length >= 12);
+      setMatches((prev) => (replace ? items : [...prev, ...items]));
+      setPage(p);
+
+      if (p === 1) {
+        const f = items.filter((m: any) => m.status === 'running').slice(0, 4);
+        setFeatured(f.length ? f : items.slice(0, 4));
+      }
+    } catch (err: any) {
+      console.error('[client] fetchMatches error', err);
+      setError(err?.message ?? 'Network error while fetching matches');
+    } finally {
+      setLoading(false);
     }
-  });
+  }
 
-  const teamEntries = await Promise.all(teamFetches);
-  const teamMap = new Map<number, TeamInfo | null>(teamEntries);
+  const filteredMatches = useMemo(() => {
+    if (!query) return matches;
+    const q = query.toLowerCase();
+    return matches.filter((m: any) => {
+      const name = (m.name ?? '') + ' ' + (m.league?.name ?? '');
+      const opponents = (m.opponents ?? [])
+        .map((o: any) => o.opponent?.name ?? o.opponent?.acronym ?? '')
+        .join(' ');
+      return (name + ' ' + opponents).toLowerCase().includes(q);
+    });
+  }, [matches, query]);
 
-  // Normalize view model
-  const matchesView = sliced.map((m) => {
-    const startTimeMs = toMs(m.start_time ?? null);
-    const tournamentName = (m as any).tournament?.name ?? m.league_name ?? null;
-    return {
-      id: m.match_id,
-      name: m.name ?? null,
-      radiantName: m.radiant_name ?? null,
-      direName: m.dire_name ?? null,
-      radiantScore:
-        typeof m.radiant_score === 'number' ? m.radiant_score : null,
-      direScore: typeof m.dire_score === 'number' ? m.dire_score : null,
-      startTime: startTimeMs,
-      tournament: tournamentName,
-      radiantTeamId: m.radiant_team_id ?? null,
-      direTeamId: m.dire_team_id ?? null,
-      radiantWin: typeof m.radiant_win === 'boolean' ? m.radiant_win : null,
-    };
-  });
+  const counts = useMemo(() => {
+    const live = matches.filter((m) => m.status === 'running').length;
+    const upcoming = matches.filter(
+      (m) => m.status === 'not_started' || m.status === 'scheduled'
+    ).length;
+    const finished = matches.filter((m) => m.status === 'finished').length;
+    return { live, upcoming, finished };
+  }, [matches]);
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto">
-      <header className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-white">
-            Live & Recent Dota 2 Pro Matches
-          </h1>
-          <p className="text-sm text-gray-400 mt-1">
-            Data refreshed server-side (cached 60s)
-          </p>
-        </div>
-      </header>
+    <div className="w-full">
+      {/* Hero */}
+      <section className="bg-gradient-to-b from-[#071018] to-transparent rounded-xl p-6 mb-6">
+        <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6 items-center">
+          <div className="lg:col-span-2">
+            <h1 className="text-3xl md:text-4xl font-extrabold text-white leading-tight">
+              Live esports scores, tournaments & rankings
+            </h1>
+            <p className="text-gray-400 mt-2 max-w-2xl">
+              Real-time match updates, team rankings, and tournament coverage
+              across Dota 2 and more.
+            </p>
 
-      <div className="space-y-4">
-        {matchesView.map((m) => {
-          const status = getStatusFromMatch({
-            radiantScore: m.radiantScore,
-            direScore: m.direScore,
-            startTime: m.startTime,
-            radiantWin: m.radiantWin,
-          });
-
-          const radiantTeam = m.radiantTeamId
-            ? teamMap.get(m.radiantTeamId) ?? null
-            : null;
-          const direTeam = m.direTeamId
-            ? teamMap.get(m.direTeamId) ?? null
-            : null;
-
-          return (
-            <article
-              key={m.id}
-              className="rounded-xl overflow-hidden border border-gray-800 bg-[#0f0f0f] shadow-sm hover:shadow-lg transition"
-            >
-              {/* Card header: tournament / league name */}
-              <div className="px-4 py-2 bg-[#111111] border-b border-gray-800 flex items-center justify-between">
-                <div className="text-sm font-semibold text-gray-200 truncate">
-                  {m.tournament ?? 'Unknown Tournament'}
+            <div className="mt-4 max-w-xl">
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Search className="w-5 h-5 text-gray-400" />
                 </div>
-                <div className="text-xs text-gray-400">
-                  {statusPill(status)}
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  className="w-full bg-[#0b0b0b] text-gray-200 placeholder:text-gray-500 rounded-lg pl-10 pr-4 py-3 border border-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                  placeholder="Search matches, teams, tournaments..."
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setFilter('running');
+                  fetchMatches(1, true);
+                }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  filter === 'running'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-[#151515] text-gray-300'
+                }`}
+              >
+                Live
+              </button>
+              <button
+                onClick={() => {
+                  setFilter('not_started');
+                  fetchMatches(1, true);
+                }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  filter === 'not_started'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-[#151515] text-gray-300'
+                }`}
+              >
+                Upcoming
+              </button>
+              <button
+                onClick={() => {
+                  setFilter('all');
+                  fetchMatches(1, true);
+                }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  filter === 'all'
+                    ? 'bg-gray-800 text-white'
+                    : 'bg-[#151515] text-gray-300'
+                }`}
+              >
+                All
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+              <div>
+                <div className="text-xs text-gray-400">Live matches</div>
+                <div className="text-xl font-bold text-white">
+                  {counts.live}
                 </div>
               </div>
+              <div className="w-12 h-12 rounded-md bg-gradient-to-br from-red-600 to-red-400 flex items-center justify-center text-white font-bold">
+                LIVE
+              </div>
+            </div>
 
-              {/* Clickable main area (internal link) */}
-              <Link
-                href={`/matches/${m.id}`}
-                className="block"
-                prefetch={false}
-              >
-                <div className="p-4 flex flex-col md:flex-row items-center md:items-stretch justify-between gap-4">
-                  {/* Teams */}
-                  <div className="flex items-center gap-4 min-w-0">
-                    {/* Radiant */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-14 h-14 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
-                        {radiantTeam?.logo_url ? (
-                          <Image
-                            src={radiantTeam.logo_url}
-                            alt={radiantTeam.name ?? m.radiantName ?? 'Radiant'}
-                            width={56}
-                            height={56}
-                            className="object-contain"
-                            unoptimized
-                          />
-                        ) : (
-                          <div className="text-sm text-white">
-                            {(m.radiantName ?? 'R').slice(0, 2)}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-gray-100 truncate">
-                          {m.radiantName ?? radiantTeam?.name ?? 'Radiant'}
-                        </div>
-                        <div className="text-xs text-gray-400 truncate">
-                          {radiantTeam?.tag ?? ''}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="hidden md:block text-gray-500">vs</div>
-
-                    {/* Dire */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-14 h-14 rounded-md bg-gray-800 flex items-center justify-center overflow-hidden p-1">
-                        {direTeam?.logo_url ? (
-                          <Image
-                            src={direTeam.logo_url}
-                            alt={direTeam.name ?? m.direName ?? 'Dire'}
-                            width={56}
-                            height={56}
-                            className="object-contain"
-                            unoptimized
-                          />
-                        ) : (
-                          <div className="text-sm text-white">
-                            {(m.direName ?? 'D').slice(0, 2)}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-gray-100 truncate">
-                          {m.direName ?? direTeam?.name ?? 'Dire'}
-                        </div>
-                        <div className="text-xs text-gray-400 truncate">
-                          {direTeam?.tag ?? ''}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Score & meta */}
-                  <div className="flex flex-col items-center md:items-end gap-2">
-                    <div className="text-2xl font-bold text-white">
-                      {status === 'scheduled'
-                        ? '--'
-                        : `${m.radiantScore ?? 0} - ${m.direScore ?? 0}`}
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {status === 'running' ? (
-                        <span className="text-red-400 font-semibold">Live</span>
-                      ) : status === 'finished' ? (
-                        <span className="text-green-400 font-semibold">
-                          Finished
-                        </span>
-                      ) : (
-                        format12Hour(m.startTime)
-                      )}
-                    </div>
-                  </div>
+            <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+              <div>
+                <div className="text-xs text-gray-400">Upcoming</div>
+                <div className="text-xl font-bold text-white">
+                  {counts.upcoming}
                 </div>
-              </Link>
-            </article>
-          );
-        })}
-      </div>
+              </div>
+              <div className="w-12 h-12 rounded-md bg-gradient-to-br from-blue-600 to-blue-400 flex items-center justify-center text-white font-bold">
+                UP
+              </div>
+            </div>
 
-      {/* Load More (client component) */}
-      <div className="flex justify-center mt-6">
-        <LoadMoreButton currentCount={countParam} />
+            <div className="bg-[#0f0f0f] border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+              <div>
+                <div className="text-xs text-gray-400">Finished</div>
+                <div className="text-xl font-bold text-white">
+                  {counts.finished}
+                </div>
+              </div>
+              <div className="w-12 h-12 rounded-md bg-gradient-to-br from-green-600 to-green-400 flex items-center justify-center text-white font-bold">
+                END
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+        <div>
+          {/* Featured */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-white">Featured</h2>
+              <a
+                href="/matches"
+                className="text-sm text-blue-400 hover:underline"
+              >
+                View all
+              </a>
+            </div>
+
+            <div className="overflow-x-auto">
+              <div className="flex gap-4 pb-2">
+                {featured.length === 0
+                  ? [1, 2, 3, 4].map((i) => (
+                      <div
+                        key={i}
+                        className="w-[320px] h-36 bg-[#121212] border border-gray-800 rounded-xl animate-pulse"
+                      />
+                    ))
+                  : featured.map((m: MatchType) => (
+                      <div key={m.id} className="min-w-[320px]">
+                        <div className="bg-[#121212] border border-gray-800 rounded-xl p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-xs text-gray-400">
+                                {m.league?.name ?? m.name}
+                              </div>
+                              <div className="text-sm text-white font-semibold mt-1">
+                                {m.name}
+                              </div>
+                              <div className="text-xs text-gray-400 mt-2">
+                                {m.status === 'running'
+                                  ? 'Live'
+                                  : m.scheduled_at
+                                  ? new Date(m.scheduled_at).toLocaleString(
+                                      [],
+                                      {
+                                        month: 'short',
+                                        day: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      }
+                                    )
+                                  : ''}
+                              </div>
+                            </div>
+
+                            <div className="text-2xl font-bold text-white">
+                              {m.status === 'running'
+                                ? `${m.score?.[0] ?? 0} - ${m.score?.[1] ?? 0}`
+                                : '--'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+              </div>
+            </div>
+          </div>
+
+          <section className="mb-6">
+            <HeroTrends limit={18} />
+          </section>
+
+          {/* Filters + results */}
+          <div className="flex items-center justify-between mb-4 gap-4">
+            <div className="flex items-center gap-2">
+              <div className="text-sm text-gray-300">Showing</div>
+              <div className="text-sm font-semibold text-white">
+                {filter === 'running'
+                  ? 'Live'
+                  : filter === 'not_started'
+                  ? 'Upcoming'
+                  : 'All'}
+              </div>
+              <div className="text-sm text-gray-500">
+                • {matches.length} results
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <select
+                value={filter}
+                onChange={(e) => {
+                  const val = e.target.value as any;
+                  setFilter(val);
+                  fetchMatches(1, true);
+                }}
+                className="bg-[#0b0b0b] text-gray-200 rounded-md px-3 py-2 border border-gray-800"
+              >
+                <option value="all">All</option>
+                <option value="running">Live</option>
+                <option value="not_started">Upcoming</option>
+                <option value="finished">Finished</option>
+              </select>
+              <button
+                onClick={() => {
+                  setMatches([]);
+                  setPage(1);
+                  fetchMatches(1, true);
+                }}
+                className="px-3 py-2 rounded-md text-sm bg-[#151515] text-gray-300 hover:bg-[#1b1b1b]"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {/* Matches list */}
+          {loading && page === 1 ? (
+            <div className="space-y-4">
+              {[1, 2, 3].map((n) => (
+                <div
+                  key={n}
+                  className="animate-pulse bg-[#1a1a1a] border border-gray-800 rounded-xl p-4 h-28"
+                />
+              ))}
+            </div>
+          ) : error ? (
+            <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 text-center">
+              <p className="text-red-400">{error}</p>
+            </div>
+          ) : filteredMatches.length === 0 ? (
+            <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl p-8 text-center text-gray-400">
+              No matches found.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredMatches.map((m: MatchType) => (
+                <MatchCard key={m.id} match={m} />
+              ))}
+            </div>
+          )}
+
+          {hasMore && !loading && filteredMatches.length > 0 && (
+            <div className="flex justify-center mt-6">
+              <button
+                onClick={() => fetchMatches(page + 1)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition"
+              >
+                Load More Matches
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Right column intentionally left empty (you removed RightSidebar) */}
+        <aside className="hidden lg:block" />
       </div>
     </div>
   );

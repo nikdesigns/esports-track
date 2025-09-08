@@ -6,40 +6,40 @@ const TEAM_URL = (id: string | number) =>
 const TEAM_MATCHES_URL = (id: string | number, limit = 5) =>
   `https://api.opendota.com/api/teams/${id}/matches?limit=${limit}`;
 
-const teamApiCache = new Map<string, { ts: number; data: any }>();
-const TTL = 30 * 1000;
-
-async function fetchJson(url: string) {
+async function fetchJson(url: string, timeout = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      return null;
+    }
     return await res.json();
   } catch (e) {
+    clearTimeout(timer);
     return null;
   }
 }
 
-/** GET /api/teams/:id */
 export async function GET(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   const id = params.id;
-  const cached = teamApiCache.get(id);
-  const now = Date.now();
-  if (cached && now - cached.ts < TTL) {
-    return NextResponse.json(cached.data);
-  }
 
-  const [team, matches] = await Promise.all([
+  const [team, recentMatches] = await Promise.all([
     fetchJson(TEAM_URL(id)),
-    fetchJson(TEAM_MATCHES_URL(id)),
+    fetchJson(TEAM_MATCHES_URL(id, 5)),
   ]);
 
   const payload = {
     team: team ?? null,
-    recentMatches: Array.isArray(matches) ? matches.slice(0, 5) : [],
+    recentMatches: Array.isArray(recentMatches)
+      ? recentMatches.slice(0, 5)
+      : [],
+    fetchedAt: Date.now(),
   };
-  teamApiCache.set(id, { ts: Date.now(), data: payload });
+
   return NextResponse.json(payload);
 }
